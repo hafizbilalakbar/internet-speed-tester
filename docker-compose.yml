@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: netvelox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: netvelox
+      POSTGRES_USER: netvelox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-netvelox}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - netvelox-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netvelox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: netvelox-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./server/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://netvelox:${POSTGRES_PASSWORD:-netvelox}@postgres:5432/netvelox
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS in the root .env file}
+      PUBLIC_NODE_URL: ${PUBLIC_NODE_URL:?Set PUBLIC_NODE_URL in the root .env file}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?Set ADMIN_JWT_SECRET in the root .env file}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?Set ADMIN_PASSWORD_HASH in the root .env file}
+      INTERNAL_NODE_TOKEN: ${INTERNAL_NODE_TOKEN:?Set INTERNAL_NODE_TOKEN in the root .env file}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  netvelox-pgdata:

@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /result/
+Disallow: /api/
+Disallow: /tools/ping
+Disallow: /tools/packet-loss
+
+Sitemap: https://netvelox.com/sitemap.xml
