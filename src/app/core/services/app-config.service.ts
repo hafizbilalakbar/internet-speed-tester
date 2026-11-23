@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 
 declare global {
   interface Window {
-    __NV_CONFIG__?: { apiBase?: string; siteUrl?: string; supportEmail?: string };
+    __NV_CONFIG__?: { apiBase?: string; speedBase?: string; siteUrl?: string; supportEmail?: string };
   }
 }
 
@@ -28,6 +28,10 @@ function getSiteOrigin(): string {
 @Injectable({ providedIn: 'root' })
 export class AppConfigService {
   readonly apiBase: string;
+  /** False on static deployments: history/AI persistence is local-only there. */
+  readonly apiEnabled: boolean;
+  /** Cloudflare edge measurement base. Independent of the Node API. */
+  readonly speedBase: string;
   readonly siteUrl: string;
   readonly supportEmail: string | null;
 
@@ -37,6 +41,10 @@ export class AppConfigService {
     const isDev = typeof window !== 'undefined' && (host === 'localhost' || host === '127.0.0.1');
     const origin = getSiteOrigin();
     this.apiBase = (runtime?.apiBase ?? fallbackApiBase(isDev)).replace(/\/$/, '');
+    this.apiEnabled = Boolean(runtime?.apiBase) || isDev;
+    // Dedicated edge Worker: all real measurements stay independent of the Node API
+    // and its optional PostgreSQL database, in development and in production.
+    this.speedBase = (runtime?.speedBase ?? 'https://netvelox-edge.dailylifemalikbilal.workers.dev').replace(/\/$/, '');
     this.siteUrl = (runtime?.siteUrl ?? fallbackSiteUrl(origin)).replace(/\/$/, '');
     this.supportEmail = runtime?.supportEmail?.trim() || null;
   }

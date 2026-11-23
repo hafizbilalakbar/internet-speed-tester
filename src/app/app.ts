@@ -1,5 +1,6 @@
 import { Component, inject } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { NavigationStart, Router, RouterOutlet } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HeaderComponent } from './layout/header/header';
 import { FooterComponent } from './layout/footer/footer';
 import { SpeedTestService } from './core/services/speed-test.service';
@@ -17,5 +18,13 @@ import { SpeedTestService } from './core/services/speed-test.service';
            .skip-link:focus { left: 1rem; top: 1rem; }`,
 })
 export class App {
-  constructor() { inject(SpeedTestService); }
+  private readonly test = inject(SpeedTestService);
+  private readonly router = inject(Router);
+
+  constructor() {
+    // Abort every in-flight measurement, timer and animation when leaving the test page.
+    this.router.events.pipe(takeUntilDestroyed()).subscribe(event => {
+      if (event instanceof NavigationStart && this.test.isRunning()) this.test.cancel();
+    });
+  }
 }

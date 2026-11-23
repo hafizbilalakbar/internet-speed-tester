@@ -62,6 +62,11 @@ const PATHS: Record<string, string[]> = {
   filter: ['M3 5h18l-7 8v6l-4 2v-8z'],
   clockrewind: ['M3 12a9 9 0 1 0 3-6.7', 'M3 4v5h5', 'M12 8v4l3 2'],
   routing: ['M6 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6', 'M18 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6', 'M9 17h4a4 4 0 0 0 4-4V9'],
+  phone: ['M7 2h10v20H7z', 'M10 18h4'],
+  laptop: ['M5 5h14v10H5z', 'M2 18h20l-1 2H3z'],
+  tv: ['M3 5h18v12H3z', 'M8 20h8', 'M12 17v3'],
+  tablet: ['M6 2h12v20H6z', 'M11 18h2'],
+  device: ['M5 4h14v16H5z', 'M9 20h6'],
 };
 
 @Component({

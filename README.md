@@ -51,10 +51,11 @@ cd ..
 # 3. Start PostgreSQL (optional but recommended)
 docker compose up -d postgres
 
-# 4. Run both
-npm run dev:api      # backend on :3001
-npm start            # Angular dev server on :4200
+# 4. Run both with one command (API on :3001, Angular on :4200)
+npm run dev
 ```
+
+`npm run dev` starts the measurement API and `ng serve` together. `npm run dev:api` and `npm start` remain available to run them separately.
 
 Open http://localhost:4200 and click **GO**. If PostgreSQL is not configured, measurements still work, but result persistence and admin analytics are disabled.
 

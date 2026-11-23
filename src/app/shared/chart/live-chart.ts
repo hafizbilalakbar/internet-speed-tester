@@ -1,282 +1,179 @@
-import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, input, OnDestroy, viewChild } from '@angular/core';
-import { NgxEchartsDirective, provideEchartsCore } from 'ngx-echarts';
-import * as echarts from 'echarts/core';
-import { LineChart } from 'echarts/charts';
-import { GridComponent, TooltipComponent } from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
-import type { EChartsCoreOption } from 'echarts/core';
+import {
+  AfterViewInit, ChangeDetectionStrategy, Component, ElementRef, NgZone, OnDestroy,
+  computed, effect, inject, input, viewChild,
+} from '@angular/core';
 import { SpeedSample } from '../../core/models/models';
 
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
+interface Point { t: number; v: number; }
 
 function niceCeil(value: number): number {
   const v = Math.max(1, value);
-  const exponent = Math.floor(Math.log10(v));
-  const magnitude = 10 ** exponent;
-  const normalized = v / magnitude;
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  return step * magnitude;
+  const magnitude = 10 ** Math.floor(Math.log10(v));
+  const n = v / magnitude;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * magnitude;
 }
 
-interface ChartRefreshResult {
-  keepAlive: boolean;
-  options: EChartsCoreOption;
+function cssColor(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
 }
 
+/** Canvas throughput chart. Data arrives at 4 Hz; drawing is throttled to 5 Hz and done outside NgZone. */
 @Component({
   selector: 'nv-live-chart',
-  imports: [NgxEchartsDirective],
-  providers: [provideEchartsCore({ echarts })],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="chart-shell" [attr.aria-label]="ariaLabel()" role="img">
+    <div class="chart-shell">
+      <canvas #canvas role="img" [attr.aria-label]="ariaLabel()"></canvas>
       @if (visible().length < 2) {
-        <div class="chart-placeholder">
-          <div class="chart-placeholder__grid"></div>
-          <div class="chart-placeholder__line" [style.--chart-color]="resolvedColor()"></div>
-          <span class="chart-placeholder__text">{{ placeholder() }}</span>
-        </div>
+        <div class="chart-empty"><span>{{ placeholder() }}</span></div>
       }
-      <div
-        echarts
-        class="chart"
-        [class.chart--hidden]="visible().length < 2"
-        [options]="options"
-        [merge]="mergeOptions"
-        [autoResize]="true"
-        [initOpts]="initOpts"
-        [theme]="chartTheme()"
-      ></div>
-      <div class="chart-axis small muted"><span>{{ startLabel() }}</span><span>{{ timeLabel() }}</span></div>
-    </div>
-  `,
+      <div class="chart-legend small muted"><span><i class="dot dot--down"></i>Download</span><span><i class="dot dot--up"></i>Upload</span><span class="chart-axis">{{ startLabel() }} → {{ timeLabel() }}</span></div>
+    </div>`,
   styles: `
     :host { display: block; width: 100%; }
-    .chart-shell { width: 100%; position: relative; }
-    .chart { display: block; width: 100%; height: 160px; }
-    .chart--hidden { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
-    .chart-placeholder {
-      position: relative;
-      height: 160px;
-      border-radius: 10px;
-      overflow: hidden;
-      background: linear-gradient(180deg, rgba(127,143,174,.06), rgba(127,143,174,.02));
-      border: 1px dashed var(--nv-border);
-    }
-    .chart-placeholder__grid {
-      position: absolute; inset: 0;
-      background-image: linear-gradient(var(--nv-border) 1px, transparent 1px), linear-gradient(90deg, var(--nv-border) 1px, transparent 1px);
-      background-size: 100% 25%, 20% 100%;
-      opacity: .35;
-    }
-    .chart-placeholder__line {
-      position: absolute; left: 0; right: 0; top: 55%; height: 2px;
-      background: linear-gradient(90deg, transparent, var(--chart-color), transparent);
-      animation: chart-sweep 2.2s linear infinite;
-      opacity: .7;
-    }
-    .chart-placeholder__text {
-      position: absolute; inset: 0; display: grid; place-items: center;
-      font-size: .78rem; color: var(--nv-muted); font-weight: 600;
-    }
-    .chart-axis { display: flex; justify-content: space-between; margin-top: .15rem; padding: 0 .1rem; }
-    @keyframes chart-sweep { from { transform: translateX(-35%); } to { transform: translateX(35%); } }
-    @media (max-width: 640px) { .chart, .chart-placeholder { height: 132px; } }
-    @media (prefers-reduced-motion: reduce) { .chart-placeholder__line { animation: none; } }
+    .chart-shell { position: relative; width: 100%; }
+    canvas { display: block; width: 100%; height: 132px; border-radius: 10px; background: linear-gradient(180deg, rgba(127,143,174,.045), transparent); }
+    .chart-empty { position: absolute; inset: 0 0 18px 0; display: grid; place-items: center; pointer-events: none; color: var(--nv-muted); font-size: .76rem; }
+    .chart-legend { display: flex; align-items: center; gap: .9rem; padding: .2rem .15rem 0; font-size: .68rem; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: .3rem; }
+    .chart-axis { margin-left: auto; font-family: var(--nv-mono); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+    .dot--down { background: var(--nv-excellent); }
+    .dot--up { background: var(--nv-accent-3); }
   `,
 })
-export class LiveChartComponent implements OnDestroy {
+export class LiveChartComponent implements AfterViewInit, OnDestroy {
   readonly samples = input<SpeedSample[]>([]);
-  readonly color = input('var(--nv-accent)');
-  readonly durationLabel = input('');
-  readonly windowMs = input(0);
-  readonly placeholder = input('Waiting for measured samples…');
+  readonly placeholder = input('Run a test to see real throughput.');
+  readonly windowMs = input(12000);
 
-  private readonly maxSamples = 180;
-  private refreshTimeout: number | null = null;
-  private lastRefresh = 0;
-
-  readonly initOpts = { renderer: 'canvas' as const };
-  readonly chartTheme = computed(() => 'default');
+  private readonly zone = inject(NgZone);
+  private readonly canvasRef = viewChild.required<ElementRef<HTMLCanvasElement>>('canvas');
+  private data: SpeedSample[] = [];
+  private drawnDown: Point[] = [];
+  private drawnUp: Point[] = [];
+  private timer: number | null = null;
+  private observer: ResizeObserver | null = null;
 
   readonly visible = computed(() => {
-    const all = this.samples().filter(s => Number.isFinite(s.t) && Number.isFinite(s.mbps) && s.mbps >= 0);
+    const all = this.samples().filter(s => Number.isFinite(s.t) && Number.isFinite(s.mbps));
     if (!all.length) return [];
     const maxT = all[all.length - 1].t;
     const window = this.windowMs();
     return window > 0 ? all.filter(s => s.t >= maxT - window) : all;
   });
+  readonly timeLabel = computed(() => `${((this.visible().at(-1)?.t ?? 0) / 1000).toFixed(1)}s`);
+  readonly startLabel = computed(() => `${((this.visible()[0]?.t ?? 0) / 1000).toFixed(1)}s`);
+  readonly ariaLabel = computed(() => `Real throughput chart, ${this.visible().length} samples`);
 
-  readonly resolvedColor = computed(() => this.resolveCssColor(this.color()));
+  constructor() {
+    effect(() => { this.data = this.visible(); this.schedule(); });
+  }
 
-  /** Recommended Y-scale tick for the current data range. */
-  readonly scale = computed(() => niceCeil(Math.max(...this.visible().map(s => s.mbps), 1)));
-
-  readonly timeLabel = computed(() => this.durationLabel() || `${((this.visible().at(-1)?.t ?? 0) / 1000).toFixed(1)}s`);
-  readonly startLabel = computed(() => {
-    const v = this.visible();
-    if (!v.length) return '0s';
-    return `${(v[0].t / 1000).toFixed(1)}s`;
-  });
-  readonly ariaLabel = computed(() => `Throughput chart with ${this.visible().length} measured samples, peak ${this.scale()} Mbps`);
-
-  /** Rebuilt option objects, refreshed at ~4fps max. */
-  readonly options = computed<EChartsCoreOption>(() => this.buildOptionRefresh(this.visible(), this.resolvedColor(), this.scale()).options);
-  readonly mergeOptions = computed<EChartsCoreOption>(() => this.buildOptionRefresh(this.visible(), this.resolvedColor(), this.scale(), true).options);
+  ngAfterViewInit(): void {
+    this.zone.runOutsideAngular(() => {
+      this.timer = window.setInterval(() => this.draw(), 200);
+      if (typeof ResizeObserver !== 'undefined') {
+        this.observer = new ResizeObserver(() => this.draw());
+        this.observer.observe(this.canvasRef().nativeElement);
+      }
+      this.draw();
+    });
+  }
 
   ngOnDestroy(): void {
-    this.killRefreshTimer();
+    if (this.timer !== null) clearInterval(this.timer);
+    this.observer?.disconnect();
   }
 
-  /** Start the chart refresh timer (max ~4 times per second). */
-  startRefreshTimer(): void {
-    this.killRefreshTimer();
-    const now = Date.now();
-    const delay = Math.max(0, 250 - (now - (this.lastRefresh || 0)));
-    this.refreshTimeout = window.setTimeout(() => {
-      this.lastRefresh = Date.now();
-      this.startRefreshTimer();
-    }, delay);
-  }
+  private schedule(): void { if (this.timer === null) return; }
 
-  killRefreshTimer(): void {
-    if (this.refreshTimeout !== null) {
-      clearTimeout(this.refreshTimeout);
-      this.refreshTimeout = null;
+  private draw(): void {
+    const canvas = this.canvasRef()?.nativeElement;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(rect.width * dpr), h = Math.round(rect.height * dpr);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const pad = { l: 34, r: 8, t: 10, b: 18 };
+    const iw = rect.width - pad.l - pad.r;
+    const ih = rect.height - pad.t - pad.b;
+    const data = this.data;
+    const maxT = Math.max(...data.map(s => s.t), 0);
+    const minT = Math.max(0, maxT - (this.windowMs() || 12000));
+    const span = Math.max(1000, maxT - minT);
+    const yMax = niceCeil(Math.max(1, ...data.map(s => s.mbps)));
+    const down = cssColor('--nv-excellent', '#35d99a');
+    const up = cssColor('--nv-accent-3', '#47d5ff');
+    const grid = cssColor('--nv-border-strong', 'rgba(148,170,214,.25)');
+    const muted = cssColor('--nv-muted', '#7f8fae');
+
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.fillStyle = muted;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i++) {
+      const y = pad.t + (ih * i) / 3;
+      ctx.strokeStyle = grid;
+      ctx.globalAlpha = i === 3 ? 0.5 : 0.22;
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + iw, y); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillText(String(Math.round(yMax * (1 - i / 3))), 3, y + 3);
     }
-  }
-
-  private buildOptionRefresh(samples: SpeedSample[], color: string, max: number, merge = false): ChartRefreshResult {
-    // Build data array, limiting to last N samples for performance
-    const data = samples.slice(-this.maxSamples).map(s => [+(s.t / 1000).toFixed(2), +Math.max(0, s.mbps).toFixed(3)]);
-
-    const minT = samples.length ? +(samples[samples.length - this.maxSamples]?.t / 1000).toFixed(2) || 0 : 0;
-    const maxT = samples.length ? +(samples[samples.length - 1]?.t / 1000).toFixed(2) || 1 : 1;
-
-    return {
-      keepAlive: true,
-      options: {
-        animation: !merge,
-        animationDuration: 120,
-        animationDurationUpdate: 80,
-        animationEasingUpdate: 'linear',
-        grid: { left: 38, right: 12, top: 14, bottom: 24, containLabel: false },
-        tooltip: {
-          trigger: 'axis',
-          confine: true,
-          backgroundColor: 'rgba(14,21,38,0.94)',
-          borderColor: 'rgba(148,170,214,0.22)',
-          textStyle: { color: '#eef3ff', fontFamily: 'Roboto Mono, monospace', fontSize: 11 },
-          formatter: (params: any) => {
-            const p = Array.isArray(params) ? params[0] : params;
-            const v = Array.isArray(p?.value) ? p.value : [0, 0];
-            return `${Number(v[1]).toFixed(2)} Mbps<br/>${Number(v[0]).toFixed(2)} s`;
-          },
-        },
-        xAxis: {
-          type: 'value',
-          min: minT,
-          max: Math.max(minT + 1, maxT),
-          boundaryGap: [0, 0],
-          axisLabel: { color: '#7f8fae', fontSize: 10, fontFamily: 'Roboto Mono, monospace', formatter: (v: number) => `${v.toFixed(0)}s` },
-          axisLine: { lineStyle: { color: 'rgba(148,170,214,0.18)' } },
-          splitLine: { show: false },
-        },
-        yAxis: {
-          type: 'value',
-          min: 0,
-          max,
-          axisLabel: { color: '#7f8fae', fontSize: 10, fontFamily: 'Roboto Mono, monospace', formatter: (v: number) => `${v}` },
-          axisLine: { show: false },
-          splitLine: { lineStyle: { color: 'rgba(148,170,214,0.14)' } },
-        },
-        series: [{
-          type: 'line',
-          showSymbol: false,
-          smooth: 0.25,
-          sampling: 'lttb',
-          data,
-          lineStyle: { color, width: 2.5 },
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: this.withAlpha(color, 0.28) },
-              { offset: 1, color: this.withAlpha(color, 0.02) },
-            ]),
-          },
-          emphasis: { disabled: true },
-        }],
-      },
-      mergeOptions: {
-        animation: !merge,
-        animationDuration: 180,
-        animationDurationUpdate: 120,
-        animationEasingUpdate: 'linear',
-        grid: { left: 38, right: 12, top: 14, bottom: 24, containLabel: false },
-        tooltip: {
-          trigger: 'axis',
-          confine: true,
-          backgroundColor: 'rgba(14,21,38,0.94)',
-          borderColor: 'rgba(148,170,214,0.22)',
-          textStyle: { color: '#eef3ff', fontFamily: 'Roboto Mono, monospace', fontSize: 11 },
-          formatter: (params: any) => {
-            const p = Array.isArray(params) ? params[0] : params;
-            const v = Array.isArray(p?.value) ? p.value : [0, 0];
-            return `${Number(v[1]).toFixed(2)} Mbps<br/>${Number(v[0]).toFixed(2)} s`;
-          },
-        },
-        xAxis: {
-          type: 'value',
-          min: minT,
-          max: Math.max(minT + 1, maxT),
-          boundaryGap: [0, 0],
-          axisLabel: { color: '#7f8fae', fontSize: 10, fontFamily: 'Roboto Mono, monospace', formatter: (v: number) => `${v.toFixed(0)}s` },
-          axisLine: { lineStyle: { color: 'rgba(148,170,214,0.18)' } },
-          splitLine: { show: false },
-        },
-        yAxis: {
-          type: 'value',
-          min: 0,
-          max,
-          axisLabel: { color: '#7f8fae', fontSize: 10, fontFamily: 'Roboto Mono, monospace', formatter: (v: number) => `${v}` },
-          axisLine: { show: false },
-          splitLine: { lineStyle: { color: 'rgba(148,170,214,0.14)' } },
-        },
-        series: [{
-          type: 'line',
-          showSymbol: false,
-          smooth: 0.25,
-          sampling: 'lttb',
-          data,
-          lineStyle: { color, width: 2.5 },
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: this.withAlpha(color, 0.28) },
-              { offset: 1, color: this.withAlpha(color, 0.02) },
-            ]),
-          },
-          emphasis: { disabled: true },
-        }],
-      },
-    };
-  }
-
-  private resolveCssColor(color: string): string {
-    if (typeof document === 'undefined') return '#2af5c8';
-    const m = color.match(/var\((--[^)]+)\)/);
-    if (!m) return color;
-    const v = getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();
-    return v || '#2af5c8';
-  }
-
-  private withAlpha(color: string, alpha: number): string {
-    if (color.startsWith('#')) {
-      const hex = color.slice(1);
-      const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
-      const n = parseInt(full, 16);
-      const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-      return `rgba(${r},${g},${b},${alpha})`;
+    for (let i = 0; i <= 4; i++) {
+      const x = pad.l + (iw * i) / 4;
+      ctx.strokeStyle = grid; ctx.globalAlpha = 0.14;
+      ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ih); ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.fillText(`${((minT + span * i / 4) / 1000).toFixed(0)}s`, x - 6, rect.height - 4);
     }
-    const rgb = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (rgb) return `rgba(${rgb[1]},${rgb[2]},${rgb[3]},${alpha})`;
-    return color;
+    if (data.length < 2) { this.drawnDown = []; this.drawnUp = []; return; }
+
+    const toPoints = (lane: 'download' | 'upload'): Point[] => data
+      .filter(s => (s.lane ?? 'download') === lane)
+      .map(s => ({ t: pad.l + ((s.t - minT) / span) * iw, v: pad.t + ih - Math.min(1, s.mbps / yMax) * ih }))
+      .filter(p => p.t >= pad.l - 1 && p.t <= pad.l + iw + 1);
+
+    const targetDown = toPoints('download');
+    const targetUp = toPoints('upload');
+    this.drawnDown = this.ease(this.drawnDown, targetDown);
+    this.drawnUp = this.ease(this.drawnUp, targetUp);
+    if (targetUp.length && !this.drawnUp.length) this.drawnUp = targetUp;
+    if (this.drawnDown.length) this.line(ctx, this.drawnDown, down, pad.t + ih);
+    if (this.drawnUp.length) this.line(ctx, this.drawnUp, up, pad.t + ih);
   }
+
+  /** Interpolate stored points toward new real samples so the line grows smoothly at 5 fps. */
+  private ease(current: Point[], target: Point[]): Point[] {
+    if (!target.length) return [];
+    if (!current.length || current.length !== target.length) return target.map(p => ({ ...p }));
+    return target.map((p, i) => ({
+      t: current[i].t + (p.t - current[i].t) * 0.45,
+      v: current[i].v + (p.v - current[i].v) * 0.45,
+    }));
+  }
+
+  private line(ctx: CanvasRenderingContext2D, points: Point[], color: string, baseline: number): void {
+    ctx.beginPath();
+    ctx.moveTo(points[0].t, points[0].v);
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1], cur = points[i];
+      ctx.quadraticCurveTo(prev.t, prev.v, (prev.t + cur.t) / 2, (prev.v + cur.v) / 2);
+    }
+    ctx.lineTo(points[points.length - 1].t, points[points.length - 1].v);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.stroke();
+    const gradient = ctx.createLinearGradient(0, points[0].v, 0, baseline);
+    gradient.addColorStop(0, `${color}33`);
+    gradient.addColorStop(1, `${color}00`);
+    ctx.lineTo(points[points.length - 1].t, baseline);
+    ctx.lineTo(points[0].t, baseline);
+    ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+    const last = points[points.length - 1];
+    ctx.beginPath(); ctx.arc(last.t, last.v, 2.2, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+  }
+}

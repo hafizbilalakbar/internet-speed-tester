@@ -1,142 +1,69 @@
 # Deployment
 
-## Production Build
+Netvelox uses two production surfaces:
+
+- **Cloudflare Worker (`worker/`)** — 100% of measurement weight. `/__down`, `/__up`, `/__ping`, `/meta`, and `/trace` are served at the edge and are independent of the Node API.
+- **Cloudflare Pages** — the built Angular static site from `dist/netvelox/browser`.
+
+The **Node API is only for results/history/admin**: result persistence, share links, history, admin auth, server registry, analytics, and optional AI analysis. It is not in the download/upload/latency hot path.
+
+## Prerequisites
 
 ```bash
-# Install dependencies
 npm install
-
-# Build the Angular app
-npm run build
-
-# Build the server
-npm --prefix server run build
+npx wrangler login
 ```
 
-## Environment Configuration
+`wrangler login` is interactive; run it once per machine. For CI, use `CLOUDFLARE_API_TOKEN` instead.
 
-Copy `.env.example` to `.env` and set the following variables:
-
-### Server (.env)
-```
-PORT=3001
-NODE_ENV=production
-
-# CORS origins (comma-separated, include your production domain)
-CORS_ORIGINS=https://your-domain.example
-
-# PostgreSQL (required for production)
-DATABASE_URL=postgres://netvelox:netvelox@localhost:5432/netvelox
-
-# Node identification
-PUBLIC_NODE_URL=https://your-domain.example
-NODE_ID=production-primary
-NODE_NAME=Netvelox Production
-NODE_PROVIDER=Netvelox
-NODE_CAPACITY=deployment-dependent
-REGION_NAME=Production
-REGION_CITY=Production City
-REGION_COUNTRY=US
-REGION_COUNTRY_CODE=US
-REGION_LAT=37.7749
-REGION_LON=-122.4194
-
-# Administration (required for production)
-ADMIN_EMAIL=admin@netvelox.example
-ADMIN_PASSWORD_HASH=hash-from-npm-run-hash-password
-ADMIN_JWT_SECRET=strong-random-secret
-INTERNAL_NODE_TOKEN=strong-random-token
-
-# AI provider (optional)
-AI_PROVIDER=rule-based
-AI_BASE_URL=https://api.openai.com/v1
-AI_API_KEY=your-openai-key
-AI_MODEL=gpt-4o-mini
-
-# Test configuration
-TEST_DOWNLOAD_MS=8000
-TEST_UPLOAD_MS=8000
-TEST_MAX_CONNECTIONS=6
-TEST_CHUNK_BYTES=1048576
-TEST_MAX_UPLOAD_BYTES=67108864
-TEST_PING_SAMPLES=14
-TEST_PROBE_COUNT=30
-```
-
-### Angular App (.env.example - copied to `.env`)
-```
-# The Angular app reads __NV_CONFIG__ from the window object,
-# which is typically set by the server's index.html or a meta tag.
-# If not set, it defaults to sensible dev/production values.
-
-# API base URL (overridden by server CORS and config)
-VITE_API_BASE=/api
-```
-
-## Docker Deployment
+The account id is already pinned in `worker/wrangler.toml` and in the Pages command below. If you also want it available to other CLI steps, export it:
 
 ```bash
-# Using docker-compose (recommended)
-docker compose up -d
-
-# Or build and run manually
-docker build -t netvelox .
-docker run -d -p 3001:3001 -p 5432:5432 \
-  -e POSTGRES_DB=netvelox \
-  -e POSTGRES_USER=netvelox \
-  -e POSTGRES_PASSWORD=strong-password \
-  -e CORS_ORIGINS=https://your-domain.example \
-  -e PUBLIC_NODE_URL=https://your-domain.example \
-  -e DATABASE_URL=postgres://netvelox:strong-password@db:5432/netvelox \
-  -e NODE_ENV=production \
-  netvelox
+export CLOUDFLARE_ACCOUNT_ID=716149166b03b22b156affd6872d24dd
 ```
 
-## Cloudflare Pages (Angular App)
+## 1. Deploy the edge worker
 
-1. Set up Cloudflare Pages project
-2. Point the build output to `dist/netvelox/browser`
-3. Add environment variables in the Cloudflare dashboard:
-   - `NODE_ENV=production`
-   - `CORS_ORIGINS=https://your-domain.example`
-   - `PUBLIC_NODE_URL=https://your-domain.example`
-   - (Other required vars from .env)
-4. Deploy
+```bash
+cd worker && npx wrangler deploy
+```
 
-## Cloudflare Worker (Speed Endpoints)
+`worker/wrangler.toml` contains the worker name, entry point (`src/index.ts`), compatibility date, and `account_id`. Add a route or custom domain to that file later if you want the worker on a branded hostname instead of `workers.dev`.
 
-1. Install Wrangler: `npm install -g wrangler`
-2. Log in: `wrangler login`
-3. Create worker: `wrangler test` (then `wrangler publish`)
-3. Set the worker URL as `PUBLIC_NODE_URL` in the server .env
+### Edge endpoint contract
 
-## HTTPS & CORS
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /__down?bytes=N` | Streams real random bytes. Clamped to 1 KiB–64 MiB. `application/octet-stream`, `Content-Encoding: identity`, HEAD supported, never cached or compressed. |
+| `POST /__up?...` | Reads and counts real request bytes up to 128 MiB without buffering. Returns `{ "received": N }`. |
+| `GET /__ping` | Tiny no-store response for RTT/loaded-latency probes. |
+| `GET /meta` | Real `request.cf` values (`colo`, `country`, `city`, `asn`, `organization`) plus `clientIp` from `CF-Connecting-IP`. Missing fields are `null`. |
+| `GET /trace` | Cloudflare trace-style text built only from real request metadata; no fabricated values. |
 
-- Production must use HTTPS
-- CORS_ORIGINS must include the exact production URL
-- Set `TRUST_PROXY=true` when behind a reverse proxy (Cloudflare, Nginx, etc.)
-- Test endpoints use `Cache-Control: no-store` to prevent caching
+All of these responses send `Cache-Control: no-store` and `CDN-Cache-Control: no-store`, so probes measure the network rather than a browser or edge cache. Range requests are not required.
 
-## Database
+### CORS
 
-- PostgreSQL is required for production (history, results, server health)
-- Run migrations or use the provided Docker setup
-- The server creates tables on first start if using the Docker image
+The worker sends `Access-Control-Allow-Origin: *`, exposes `Content-Length`/`Content-Type`, and answers `OPTIONS` preflight with `204`. Keep the wildcard while the speed test is public. If you later restrict origins, reflect only allowlisted origins and add `Vary: Origin`.
 
-## Health Checks
+## 2. Point the web app at the worker
 
-- `/api/health` - returns `{ ok: true, service: 'netvelox-measurement', time: number, persistence: boolean }`
-- Used by the frontend to show server status
-- Used by the Docker healthcheck
-- Cloudflare auto-health routing can use this endpoint
+Use the deployed worker URL as the measurement endpoint base for the edge routes above. Keep the Node API URL only for the results/history/admin calls. This split is deliberate: measurement traffic scales at the edge, while durable state stays in the Node API/PostgreSQL.
 
-## Caching Headers
+## 3. Build and deploy Pages
 
-- Test endpoints (`/tests/download`, `/tests/upload`) use `Cache-Control: no-store, no-cache, must-revalidate, no-transform`
-- Server responses use `Cache-Control: no-store` where appropriate
-- Prevents stale speed test results
+```bash
+npm run build
+npx wrangler pages deploy dist/netvelox/browser --project-name netvelox --account-id 716149166b03b22b156affd6872d24dd
+```
 
-## Feature Toggles
+`npm run build` produces `dist/netvelox/browser`. No root `wrangler.toml` is required for this deploy because the project name and account id are passed explicitly. Add a root Pages config only if you later need Pages-specific headers, redirects, or functions.
 
-- `companion/` app must be running on `http://127.0.0.1:8787` for WiFi/router/device info
-- Set `AGENT_PORT` and `AGENT_TOKEN` env vars if customizing the companion port/token
+## Rollout order
+
+1. Deploy the worker with `cd worker && npx wrangler deploy`.
+2. Confirm `/__ping`, `/__down`, `/__up`, `/meta`, and `/trace` are reachable from a browser with the expected no-store and CORS headers.
+3. Point the web app's edge measurement base URL to the worker.
+4. Build and deploy Pages with the commands above.
+5. Keep the Node API running for results, history, share links, admin, and analytics only.
+6. Monitor worker invocations/errors and Node API load; measurement volume should appear on the worker, not the Node API.

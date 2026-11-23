@@ -37,7 +37,7 @@ import { TestResult } from '../../core/models/models';
         </div>
 
         <div class="result-hero panel panel--pad">
-          <nv-speedometer [value]="r.measurements.downloadMbps ?? 0" [color]="qualityColor(r.score.overall)" label="DOWNLOAD" />
+          <nv-speedometer [value]="r.measurements.downloadMbps ?? 0" label="DOWNLOAD" />
           <div class="nv-grid nv-grid--2">
             <div class="stat stat--hero"><div class="stat__label">Download</div><div class="stat__value">{{ (r.measurements.downloadMbps ?? 0) | number:'1.2-2' }} <small>Mbps</small></div><div class="stat__sub">over {{ (r.measurements.downloadDurationMs / 1000) | number:'1.1-1' }}s · {{ r.measurements.connections }} connections</div></div>
             <div class="stat stat--hero"><div class="stat__label">Upload</div><div class="stat__value">{{ (r.measurements.uploadMbps ?? 0) | number:'1.2-2' }} <small>Mbps</small></div><div class="stat__sub">over {{ (r.measurements.uploadDurationMs / 1000) | number:'1.1-1' }}s</div></div>
@@ -50,14 +50,14 @@ import { TestResult } from '../../core/models/models';
 
         <div class="nv-grid nv-grid--2" style="margin-top:1rem">
           <div class="panel panel--pad">
-            <h3>Download throughput</h3><nv-live-chart [samples]="r.measurements.downloadSamples" color="var(--nv-accent)" [durationLabel]="(r.measurements.downloadDurationMs/1000|number:'1.0-0') + 's'" />
+            <h3>Download throughput</h3><nv-live-chart [samples]="r.measurements.downloadSamples" [windowMs]="0" placeholder="No download samples were captured." />
           </div>
           <div class="panel panel--pad">
-            <h3>Upload throughput</h3><nv-live-chart [samples]="r.measurements.uploadSamples" color="var(--nv-accent-2)" [durationLabel]="(r.measurements.uploadDurationMs/1000|number:'1.0-0') + 's'" />
+            <h3>Upload throughput</h3><nv-live-chart [samples]="r.measurements.uploadSamples" [windowMs]="0" placeholder="No upload samples were captured." />
           </div>
           <div class="panel panel--pad">
             <h3>Latency timeline</h3>
-            <nv-live-chart [samples]="pingSeries()" color="var(--nv-good)" durationLabel="samples" />
+            <nv-live-chart [samples]="pingSeries()" [windowMs]="0" placeholder="No latency samples were captured." />
             <p class="tiny muted">Each point is one measured round trip to the test server.</p>
           </div>
           <div class="panel panel--pad">

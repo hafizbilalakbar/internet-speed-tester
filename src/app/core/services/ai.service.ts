@@ -1,12 +1,15 @@
 import { Injectable, inject } from '@angular/core';
 import { AiAnalysis, TestMeasurements, TestingServer } from '../models/models';
 import { ApiService } from './api.service';
+import { AppConfigService } from './app-config.service';
 
 @Injectable({ providedIn: 'root' })
 export class AiService {
   private api = inject(ApiService);
+  private config = inject(AppConfigService);
 
   async analyze(m: TestMeasurements, server: TestingServer): Promise<AiAnalysis> {
+    if (!this.config.apiEnabled) return this.local(m, server);
     try {
       const result = await firstValue(this.api.post<AiAnalysis>('/ai/analyze', { measurements: m, server }));
       return result;

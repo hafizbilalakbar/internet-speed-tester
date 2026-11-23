@@ -27,7 +27,7 @@ describe('speedometer geometry', () => {
   });
 
   it('places labels at the exact inverse positions of the piecewise scale', () => {
-    expect([0, .25, .5, .75, 1].map(f => Math.round(gaugeValueAtFraction(f, 500)))).toEqual([0, 50, 100, 300, 500]);
+    expect([0, .25, .5, .75, 1].map(f => Math.round(gaugeValueAtFraction(f, 1000)))).toEqual([0, 10, 100, 500, 1000]);
   });
 
   it('keeps the needle tip inside the dial radius at every tested value', () => {

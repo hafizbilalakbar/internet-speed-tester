@@ -27,6 +27,7 @@ export class ResultsService {
   }
 
   private async canPersist(): Promise<boolean> {
+    if (!this.config.apiEnabled) return false;
     const now = Date.now();
     const ttl = this.persistence ? 60_000 : 15_000;
     if (this.persistence !== undefined && now - this.persistenceCheckedAt < ttl) return this.persistence;

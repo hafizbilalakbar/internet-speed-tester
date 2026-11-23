@@ -101,3 +101,41 @@ toolsRouter.get('/tools/connectivity', asyncHandler(async (_req, res) => {
 toolsRouter.get('/tools/ipv6', asyncHandler(async (req, res) => {
   res.json(await lookupIp(req, '6'));
 }));
+
+/** Reverse geocoding for an explicitly granted precise location.
+ *  Server-side User-Agent satisfies the Nominatim usage policy; one request per second per client. */
+const geoLast = new Map<string, number>();
+toolsRouter.get('/tools/reverse-geocode', asyncHandler(async (req, res) => {
+  const lat = Number(req.query.lat), lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    res.status(400).json({ message: 'Valid latitude and longitude are required' }); return;
+  }
+  const client = req.ip ?? 'local';
+  const now = Date.now();
+  if (now - (geoLast.get(client) ?? 0) < 1000) {
+    res.status(429).json({ message: 'Please wait a second before requesting another location' }); return;
+  }
+  geoLast.set(client, now);
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&addressdetails=1&lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Netvelox-SpeedTest/1.0 (local diagnostics; contact: admin@netvelox.local)',
+        Accept: 'application/json',
+        'Accept-Language': typeof req.headers['accept-language'] === 'string' ? req.headers['accept-language'] : 'en',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!response.ok) { res.status(502).json({ message: `Reverse geocoder returned ${response.status}` }); return; }
+    const data = await response.json() as { display_name?: string; address?: Record<string, string>; error?: string };
+    const a = data.address ?? {};
+    res.json({
+      city: a.city ?? a.town ?? a.village ?? a.municipality ?? a.county ?? null,
+      region: a.state ?? a.region ?? null,
+      country: a.country ?? null,
+      countryCode: (a.country_code ?? '').toUpperCase() || null,
+      displayName: data.display_name ?? null,
+      source: 'OpenStreetMap Nominatim (explicit permission only)',
+    });
+  } catch { res.status(502).json({ message: 'Reverse geocoding is unavailable' }); }
+}));

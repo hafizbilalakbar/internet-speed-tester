@@ -1,0 +1,11 @@
+# Netvelox edge measurement worker.
+# This worker is independent of the Node API: it serves only the measurement hot path.
+
+name = "netvelox-edge"
+main = "src/index.ts"
+compatibility_date = "2026-11-22"
+account_id = "716149166b03b22b156affd6872d24dd"
+workers_dev = true
+
+[observability]
+enabled = true

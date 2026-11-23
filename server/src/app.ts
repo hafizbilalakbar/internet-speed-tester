@@ -58,8 +58,15 @@ app.use(compression({
 }));
 app.use(express.json({ limit: '2mb' }));
 
-app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 800, standardHeaders: 'draft-7', legacyHeaders: false }));
-app.use('/api/tests/session', rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false, message: { message: 'Too many test sessions. Please wait a moment.' } }));
+app.use('/api', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  // Discovery must keep working even after repeated measurement bursts.
+  skip: req => req.path === '/health' || req.path === '/servers',
+}));
+app.use('/api/tests/session', rateLimit({ windowMs: 60 * 1000, limit: 200, standardHeaders: 'draft-7', legacyHeaders: false, message: { message: 'Too many test sessions. Please wait a moment.' } }));
 app.use('/api/results', rateLimit({ windowMs: 60 * 1000, limit: 40, standardHeaders: 'draft-7', legacyHeaders: false }));
 app.use('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false }));
 

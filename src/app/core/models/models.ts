@@ -1,7 +1,7 @@
 export type TestPhase = 'idle' | 'preparing' | 'ping' | 'download' | 'upload' | 'diagnostics' | 'complete' | 'error' | 'cancelled';
 export type QualityLevel = 'excellent' | 'good' | 'moderate' | 'poor' | 'critical' | 'unknown';
 
-export interface SpeedSample { t: number; mbps: number; }
+export interface SpeedSample { t: number; mbps: number; lane?: 'download' | 'upload'; }
 
 export interface LatencyStats {
   samples: number[];
@@ -78,6 +78,9 @@ export interface NetworkSnapshot {
   ipv6: IpInfo | null;
   browser: BrowserInfo;
   preciseLocation: { latitude: number; longitude: number; accuracy: number | null } | null;
+  /** Only populated after explicit geolocation permission and reverse geocoding. */
+  preciseCity: string | null;
+  locationDetail: string | null;
   collectedAt: string;
 }
 
@@ -159,3 +162,12 @@ export interface SessionResponse {
 }
 
 export interface ApiError { message: string; status: number; }
+
+export interface HealthCheck {
+  ok: boolean;
+  message?: string;
+  service?: string;
+  time?: number;
+  persistence?: boolean;
+  checkedAt: string;
+}

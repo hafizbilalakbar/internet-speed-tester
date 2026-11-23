@@ -1,88 +1,167 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { ApiService } from './api.service';
+import { AppConfigService } from './app-config.service';
 import { BrowserInfo, IpInfo, NetworkSnapshot } from '../models/models';
+import { MeasurementService } from './measurement.service';
 
-const IP_INTELLIGENCE_ENDPOINTS = [
-  'https://api.ipify.org?format=json',
-  'https://api64.ipify.org?format=json',
-  'https://ifconfig.me/ip',
-  'https://icanhazip.com/',
-];
+function emptyIp(family: 'IPv4' | 'IPv6'): IpInfo {
+  return { ip: null, family, isp: null, asn: null, org: null, city: null, region: null, country: null, countryCode: null, latitude: null, longitude: null, timezone: null, source: null };
+}
+
+/** Connection type as reported by the browser. Never guessed from speed. */
+export function connectionModeLabel(): string {
+  const nav = navigator as Navigator & { connection?: { type?: string; effectiveType?: string } };
+  const type = (nav.connection?.type ?? '').toLowerCase();
+  const map: Record<string, string> = {
+    wifi: 'WiFi', ethernet: 'Ethernet', cellular: 'Cellular', wimax: 'WiMAX',
+    bluetooth: 'Bluetooth', other: 'Other', none: 'Offline',
+  };
+  if (map[type]) return map[type];
+  if (nav.connection && type === 'unknown') return 'Unknown (not exposed by browser)';
+  return 'Unknown (not exposed by browser)';
+}
+
+interface ProviderInfo {
+  success?: boolean;
+  ip?: string; city?: string; region?: string; country?: string; country_code?: string;
+  isp?: string; org?: string; asn?: string; latitude?: number; longitude?: number; timezone?: string;
+  connection?: { isp?: string; org?: string; asn?: string };
+}
 
 @Injectable({ providedIn: 'root' })
 export class NetworkInfoService {
-  private api = inject(ApiService);
+  private config = inject(AppConfigService);
+  private measure = inject(MeasurementService);
+
   readonly snapshot = signal<NetworkSnapshot | null>(null);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly geoPermission = signal<PermissionState | 'unknown'>('unknown');
+  readonly locating = signal(false);
 
-  private async fetchJson(url: string, timeoutMs = 5000): Promise<any> {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { 'User-Agent': 'Netvelox/1.0' } });
-    return res.json();
-  }
+  private lastReverseAt = 0;
+  private reverseCache = new Map<string, { city: string | null; region: string | null; country: string | null; countryCode: string | null; displayName: string | null; source: string }>();
 
-  private async detectPublicIp(): Promise<string | null> {
-    for (const endpoint of IP_INTELLIGENCE_ENDPOINTS) {
-      try {
-        const data = await this.fetchJson(endpoint, 5000);
-        let ip: string | null = null;
-        if (typeof data === 'string') ip = data.trim();
-        else if (data && typeof data.ip === 'string') ip = data.ip.trim();
-        if (ip) return ip;
-      } catch { /* try next endpoint */ }
-    }
-    return null;
+  private async getJson<T>(url: string, timeoutMs = 4500): Promise<T> {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json() as T;
   }
 
   async collect(): Promise<NetworkSnapshot> {
+    if (this.loading()) return this.snapshot() ?? this.blank();
     this.loading.set(true); this.error.set(null);
-    const [ip, ipv6] = await Promise.allSettled([
-      firstValue(this.api.get<IpInfo>('/network/ip')),
-      firstValue(this.api.get<IpInfo>('/network/ip?v=6')),
-    ]);
     const previous = this.snapshot();
-    const ipv4 = ip.status === 'fulfilled' ? this.sanitizeIp(ip.value, 'IPv4') : this.emptyIp('IPv4');
-    const ipv6Raw = ipv6.status === 'fulfilled' ? this.sanitizeIp(ipv6.value, 'IPv6') : null;
+    const [edge, v6, provider] = await Promise.allSettled([
+      this.measure.edgeMeta(`${this.config.speedBase}/__down`, AbortSignal.timeout(3500)),
+      this.detectIpv6(),
+      Promise.resolve(null as ProviderInfo | null),
+    ]);
+    const ext = edge.status === 'fulfilled' ? edge.value : null;
+    let info = provider.status === 'fulfilled' ? provider.value : null;
+    const ip = ext?.ip ?? null;
+    if (ip) {
+      try {
+        const data = await this.getJson<ProviderInfo>(`https://ipwho.is/${encodeURIComponent(ip)}`, 3500);
+        if (data && data.success !== false) info = data;
+      } catch {
+        try { info = await this.getJson<ProviderInfo>(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, 3500); }
+        catch { info = null; }
+      }
+    }
+    const ipv4: IpInfo = {
+      ...emptyIp('IPv4'),
+      ip,
+      isp: info?.isp ?? info?.connection?.isp ?? info?.org ?? null,
+      asn: ext?.asn ? `AS${ext.asn}` : (info?.connection?.asn ? `AS${info.connection.asn}` : info?.asn ?? null),
+      org: info?.org ?? info?.connection?.org ?? null,
+      // Cloudflare trace wins for country; city is from IP and always labelled approximate.
+      country: ext?.country ?? info?.country ?? null,
+      countryCode: (ext?.country ?? info?.country_code ?? '').toUpperCase() || null,
+      city: ext?.city ?? info?.city ?? null,
+      region: info?.region ?? null,
+      latitude: info?.latitude ?? null,
+      longitude: info?.longitude ?? null,
+      timezone: ext?.timezone ?? info?.timezone ?? null,
+      source: ext ? `Cloudflare edge${info ? ' + IP intelligence provider' : ''}` : (info ? 'IP intelligence provider' : null),
+    };
+    const ipv6Value = v6.status === 'fulfilled' ? v6.value : null;
     const snap: NetworkSnapshot = {
       ipv4,
-      ipv6: ipv6Raw?.ip ? ipv6Raw : null,
+      ipv6: ipv6Value ? { ...emptyIp('IPv6'), ip: ipv6Value, source: 'api64.ipify.org' } : null,
       browser: this.browserInfo(),
       preciseLocation: previous?.preciseLocation ?? null,
+      preciseCity: previous?.preciseCity ?? null,
+      locationDetail: previous?.locationDetail ?? null,
       collectedAt: new Date().toISOString(),
     };
-    // Determine if we have any IP intelligence
-    const publicIpFromBackend = ipv4.ip;
-    const intelAvailable = publicIpFromBackend && !isPrivateIp(publicIpFromBackend);
-    if (!intelAvailable) {
-      this.error.set('IP intelligence services are unavailable; connection details are omitted.');
-    } else {
-      this.error.set(null);
-    }
+    if (!ip) this.error.set('Public IP could not be determined from the edge or fallback providers.');
     this.snapshot.set(snap);
     this.loading.set(false);
     return snap;
   }
 
-  private isPrivateIp(ip: string): boolean {
-    if (!ip) return true;
-    const p = ip.split('.').map(Number);
-    return p[0] === 10 || p[0] === 127 || (p[0] === 192 && p[1] === 168) || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) || p[0] === 169 && p[1] === 254 || p[0] === 0;
+  private async detectIpv6(): Promise<string | null> {
+    try {
+      const res = await this.getJson<{ ip?: string }>('https://api64.ipify.org?format=json', 3000);
+      return typeof res.ip === 'string' && res.ip.includes(':') ? res.ip : null;
+    } catch { return null; }
   }
 
-  async requestPreciseLocation(): Promise<{ latitude: number; longitude: number; accuracy: number | null } | null> {
+  /** Explicit permission only. Reverse geocodes with a proper User-Agent and a 1 s rate limit. */
+  async requestPreciseLocation(): Promise<{ latitude: number; longitude: number; accuracy: number | null; city: string | null } | null> {
     if (!('geolocation' in navigator)) return null;
+    this.locating.set(true);
     return new Promise(resolve => {
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          const loc = { latitude: +pos.coords.latitude.toFixed(5), longitude: +pos.coords.longitude.toFixed(5), accuracy: pos.coords.accuracy };
-          this.snapshot.update(s => s ? { ...s, preciseLocation: loc } : s);
-          resolve(loc);
-        },
-        () => resolve(null),
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
-      );
+      navigator.geolocation.getCurrentPosition(async pos => {
+        const loc = {
+          latitude: +pos.coords.latitude.toFixed(5),
+          longitude: +pos.coords.longitude.toFixed(5),
+          accuracy: pos.coords.accuracy,
+        };
+        const place = await this.reverseGeocode(loc.latitude, loc.longitude);
+        this.snapshot.update(s => s ? { ...s, preciseLocation: loc, preciseCity: place?.city ?? null, locationDetail: place?.displayName ?? null } : s);
+        this.locating.set(false);
+        void this.refreshPermission();
+        resolve({ ...loc, city: place?.city ?? null });
+      }, () => { this.locating.set(false); resolve(null); },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
     });
+  }
+
+  private async reverseGeocode(lat: number, lon: number): Promise<{ city: string | null; region: string | null; country: string | null; countryCode: string | null; displayName: string | null; source: string } | null> {
+    const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+    const cached = this.reverseCache.get(key);
+    if (cached) return cached;
+    const wait = 1000 - (Date.now() - this.lastReverseAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    this.lastReverseAt = Date.now();
+    let place: { city: string | null; region: string | null; country: string | null; countryCode: string | null; displayName: string | null; source: string } | null = null;
+    try {
+      place = await this.getJson<NonNullable<typeof place>>(`${this.config.apiBase}/tools/reverse-geocode?lat=${lat}&lon=${lon}`, 6000);
+    } catch {
+      // Browsers cannot set User-Agent; the automatic browser UA and referrer apply here.
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&addressdetails=1&lat=${lat}&lon=${lon}`, {
+          headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' },
+          referrerPolicy: 'strict-origin-when-cross-origin', signal: AbortSignal.timeout(6000), cache: 'no-store',
+        });
+        if (res.ok) {
+          const d = await res.json() as { display_name?: string; address?: Record<string, string> };
+          const a = (d.address ?? {}) as {
+            city?: string; town?: string; village?: string; municipality?: string; county?: string;
+            state?: string; region?: string; country?: string; country_code?: string;
+          };
+          place = {
+            city: a.city ?? a.town ?? a.village ?? a.municipality ?? a.county ?? null,
+            region: a.state ?? a.region ?? null, country: a.country ?? null,
+            countryCode: (a.country_code ?? '').toUpperCase() || null,
+            displayName: d.display_name ?? null, source: 'OpenStreetMap Nominatim (explicit permission only)',
+          };
+        }
+      } catch { place = null; }
+    }
+    if (place) this.reverseCache.set(key, place);
+    return place;
   }
 
   async refreshPermission(): Promise<void> {
@@ -90,20 +169,10 @@ export class NetworkInfoService {
     catch { this.geoPermission.set('unknown'); }
   }
 
-  private emptyIp(family: 'IPv4' | 'IPv6'): IpInfo {
-    return { ip: null, family, isp: null, asn: null, org: null, city: null, region: null, country: null, countryCode: null, latitude: null, longitude: null, timezone: null, source: null };
-  }
-
-  private sanitizeIp(value: IpInfo | null | undefined, family: 'IPv4' | 'IPv6'): IpInfo {
-    if (!value) return this.emptyIp(family);
-    // The backend already resolves the genuine public IP and geolocation.
-    // Pass through whatever the backend resolved, only normalizing shape.
-    const ip = typeof value.ip === 'string' ? value.ip.trim() : null;
+  private blank(): NetworkSnapshot {
     return {
-      ...this.emptyIp(family),
-      ...value,
-      family: value.family ?? family,
-      ip,
+      ipv4: emptyIp('IPv4'), ipv6: null, browser: this.browserInfo(),
+      preciseLocation: null, preciseCity: null, locationDetail: null, collectedAt: new Date().toISOString(),
     };
   }
 
@@ -131,6 +200,3 @@ export class NetworkInfoService {
     };
   }
 }
-
-import { firstValueFrom } from 'rxjs';
-function firstValue<T>(o: import('rxjs').Observable<T>): Promise<T> { return firstValueFrom(o); }

@@ -1,125 +1,91 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { TestingServer } from '../models/models';
-import { ApiService } from './api.service';
+import { HealthCheck, TestingServer } from '../models/models';
 import { AppConfigService } from './app-config.service';
-import { firstValueFrom } from 'rxjs';
+import { EdgeMeta, MeasurementService } from './measurement.service';
 
-/** Resolve a node's real endpoint. The backend publishes `host`; older payloads may use `baseUrl`. */
-export function nodeApiBase(raw: string | undefined, fallback: string): string {
-  const value = (raw ?? '').trim().replace(/\/+$/, '');
-  if (!value) return fallback.replace(/\/+$/, '');
-  try {
-    const url = new URL(value);
-    const path = url.pathname.replace(/\/+$/, '');
-    return path.endsWith('/api') ? `${url.origin}${path}` : `${url.origin}${path}/api`;
-  } catch {
-    return `${value.replace(/\/+$/, '')}/api`;
-  }
-}
-
+/** The edge endpoint is the measurement server. The Node API is never required to run a test. */
 @Injectable({ providedIn: 'root' })
 export class ServerService {
-  private api = inject(ApiService);
   private config = inject(AppConfigService);
+  private measure = inject(MeasurementService);
+
   readonly servers = signal<TestingServer[]>([]);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
   readonly selected = signal<TestingServer | null>(null);
   readonly auto = signal(true);
-  readonly lastHealthCheck = signal(null);
+  readonly lastHealthCheck = signal<HealthCheck | null>(null);
 
-  /** Check if the measurement backend is healthy. */
-  async checkHealth(): Promise<boolean> {
-    try {
-      const apiBase = this.config.apiBase;
-      const healthUrl = apiBase.endsWith('/api') ? `${apiBase.slice(0, -4)}/health` : `${apiBase}/health`;
-      const res = await fetch(healthUrl, { method: 'GET', headers: { 'Cache-Control': 'no-cache' }, signal: AbortSignal.timeout(5000) });
-      if (!res.ok) return false;
-      const data = await res.json();
-      // Store health info for UI display
-      this.lastHealthCheck = { ok: res.ok, ...data, checkedAt: new Date().toISOString() };
-      return true;
-    } catch {
-      return false;
-    }
+  constructor() { this.servers.set([this.edgeServer(null)]); this.selected.set(this.servers()[0]); }
+
+  edgeServer(meta: EdgeMeta | null): TestingServer {
+    const colo = meta?.colo ?? null;
+    return {
+      id: `cf-edge${colo ? `-${colo.toLowerCase()}` : ''}`,
+      name: colo ? `Cloudflare Edge · ${colo}` : 'Cloudflare Edge',
+      city: meta?.city ?? 'Edge network',
+      country: meta?.country ?? '',
+      countryCode: meta?.country ?? '',
+      provider: 'Cloudflare',
+      host: this.config.speedBase,
+      baseUrl: this.config.speedBase,
+      protocols: ['https'],
+      region: colo ?? 'global',
+      latitude: 0, longitude: 0,
+      latencyMs: null, loadPct: null, status: 'online',
+      capacity: null, distanceKm: null,
+    };
   }
 
   async discover(): Promise<TestingServer[]> {
     this.loading.set(true); this.error.set(null);
     try {
-      // First check if the backend is reachable
-      const healthy = await this.checkHealth();
-      if (!healthy) {
-        this.error.set('Server discovery failed: backend is unreachable. Please ensure the measurement backend is running.');
-        this.servers.set([]);
-        this.selected.set(null);
-        return [];
-      }
-      const list = await firstValueFrom(this.api.get<TestingServer[]>('/servers'));
-      if (!Array.isArray(list)) throw new Error('The server list response was invalid.');
-      const ranked = await this.rankByLatency(list.filter(s => s.status !== 'offline'));
-      this.servers.set(ranked);
-      if (!ranked.length) this.error.set('No online measurement server is available. Configure a regional server to run tests.');
-      else if (this.auto()) this.selected.set(ranked[0]);
-      else {
-        const current = ranked.find(s => s.id === this.selected()?.id);
-        this.selected.set(current ?? ranked[0]);
-      }
-      return ranked;
-    } catch (e) {
-      const message = (e as { message?: string }).message ?? 'Server discovery failed';
-      this.error.set(`Server discovery failed: ${message}`);
-      this.servers.set([]);
-      this.selected.set(null);
-      return [];
+      const meta = await this.measure.edgeMeta(`${this.config.speedBase}/__down`, AbortSignal.timeout(3000));
+      const edge = this.edgeServer(meta);
+      this.servers.set([edge]);
+      this.selected.set(edge);
+      return [edge];
+    } catch {
+      const edge = this.edgeServer(null);
+      this.servers.set([edge]);
+      this.selected.set(edge);
+      return [edge];
     } finally { this.loading.set(false); }
   }
 
+  /** Optional status only — failures never block a measurement or raise a page banner. */
+  async checkHealth(): Promise<boolean> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const res = await fetch(`${this.config.apiBase}/health`, {
+        signal: AbortSignal.timeout(2500), cache: 'no-store',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as Partial<HealthCheck>;
+      this.lastHealthCheck.set({
+        ok: data.ok !== false, message: typeof data.message === 'string' ? data.message : undefined,
+        service: typeof data.service === 'string' ? data.service : undefined,
+        time: typeof data.time === 'number' ? data.time : undefined,
+        persistence: typeof data.persistence === 'boolean' ? data.persistence : undefined, checkedAt,
+      });
+      return data.ok !== false;
+    } catch {
+      this.lastHealthCheck.set({ ok: false, message: 'not running', checkedAt });
+      return false;
+    }
+  }
+
   select(id: string): TestingServer | null {
-    if (!id) {
-      this.auto.set(true);
-      const best = this.servers()[0] ?? null;
-      this.selected.set(best);
-      return best;
+    if (!id) { this.auto.set(true); this.selected.set(this.servers()[0] ?? null); }
+    else {
+      const match = this.servers().find(s => s.id === id);
+      if (match) { this.auto.set(false); this.selected.set(match); }
     }
-    const match = this.servers().find(x => x.id === id) ?? null;
-    if (match) {
-      this.auto.set(false);
-      this.selected.set(match);
-    }
-    return match;
+    return this.selected();
   }
 
-  /** Preferred server first, then the next healthy candidates for automatic failover. */
-  candidates(preferredId?: string): TestingServer[] {
-    const healthy = this.servers().filter(s => s.status !== 'offline');
-    const preferred = preferredId ? healthy.find(s => s.id === preferredId) : undefined;
-    const first = preferred ?? this.selected();
-    return first ? [first, ...healthy.filter(s => s.id !== first.id)] : healthy;
-  }
-
-  /** Real browser-side latency probes against each candidate's published endpoint. */
-  private async rankByLatency(list: TestingServer[]): Promise<TestingServer[]> {
-    const results = await Promise.all(list.map(async s => {
-      const values: number[] = [];
-      const base = nodeApiBase(s.baseUrl ?? s.host, this.config.apiBase);
-      for (let i = 0; i < 3; i++) {
-        const t0 = performance.now();
-        try {
-          const res = await fetch(`${base}/servers/${encodeURIComponent(s.id)}/ping?i=${i}&t=${Date.now()}`, {
-            cache: 'no-store', signal: AbortSignal.timeout(2500),
-          });
-          if (res.ok) { await res.arrayBuffer(); values.push(performance.now() - t0); }
-        } catch { /* unreachable candidate */ }
-      }
-      const reachable = values.length > 0;
-      return {
-        ...s,
-        latencyMs: reachable ? +Math.min(...values).toFixed(1) : null,
-        status: reachable ? s.status : (s.status === 'online' ? 'degraded' as const : s.status),
-        baseUrl: base,
-      };
-    }));
-    return results.sort((a, b) => (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999));
+  candidates(): TestingServer[] {
+    const first = this.selected() ?? this.servers()[0];
+    return first ? [first, ...this.servers().filter(s => s.id !== first.id)] : [];
   }
 }
