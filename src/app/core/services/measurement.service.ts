@@ -2,13 +2,13 @@ import { Injectable } from '@angular/core';
 import { LatencyStats, SpeedSample } from '../models/models';
 
 export interface ThroughputResult {
-  /** Real bytes transferred after the warm-up window. */
+  /** Payload bytes transferred after the warm-up window (headers are never counted). */
   bytes: number;
   samples: SpeedSample[];
   /** Real measurement duration after warm-up. */
   durationMs: number;
   interruptions: number;
-  /** Average of the stable one-second windows. */
+  /** Average payload throughput of the stable window. */
   mbps: number;
 }
 
@@ -17,8 +17,10 @@ export interface ThroughputOptions {
   connections: number;
   durationMs: number;
   warmupMs: number;
-  /** performance.now() timestamp shared by every phase, so the chart has one real time axis. */
+  /** Start of this phase. Drives timeouts and the warm-up window. */
   startedAt: number;
+  /** Start of the whole test. Drives the chart's relative time axis. */
+  timelineStart?: number;
   signal: AbortSignal;
   onSample: (sample: SpeedSample) => void;
 }
@@ -32,19 +34,24 @@ export interface EdgeMeta {
   timezone: string | null;
 }
 
-const SAMPLE_MS = 500;
+export interface TraceInfo extends EdgeMeta {
+  organization: string | null;
+  httpProtocol: string | null;
+  tlsVersion: string | null;
+}
+
+const SAMPLE_MS = 200;
 const WINDOW_MS = 1000;
 
 interface RateWindow {
-  /** Plain arrays, never signals: sampling must not trigger change detection. */
   buckets: Array<{ t: number; bytes: number }>;
   stableBytes: number;
-  rates: number[];
   lastSampleAt: number;
+  origin: number;
 }
 
-function createWindow(): RateWindow {
-  return { buckets: [], stableBytes: 0, rates: [], lastSampleAt: 0 };
+function createWindow(origin: number): RateWindow {
+  return { buckets: [], stableBytes: 0, lastSampleAt: -Infinity, origin };
 }
 
 function addBytes(w: RateWindow, count: number, at: number, warmupEnd: number): void {
@@ -56,47 +63,41 @@ function addBytes(w: RateWindow, count: number, at: number, warmupEnd: number): 
 }
 
 function sampleWindow(w: RateWindow, at: number, warmupEnd: number, lane: 'download' | 'upload'): SpeedSample | null {
-  if (at < warmupEnd || at - w.lastSampleAt < SAMPLE_MS - 30) return null;
+  if (at < warmupEnd || at - w.lastSampleAt < SAMPLE_MS - 20) return null;
   w.lastSampleAt = at;
   const from = at - WINDOW_MS;
   let bytes = 0;
   for (const b of w.buckets) if (b.t >= from && b.t <= at) bytes += b.bytes;
-  const spanMs = Math.min(WINDOW_MS, at - warmupEnd);
-  const mbps = spanMs > 0 ? (bytes * 8) / (spanMs / 1000) / 1_000_000 : 0;
-  w.rates.push(mbps);
-  return { t: Math.round(at), mbps: +Math.max(0, mbps).toFixed(2), lane };
+  const spanMs = Math.max(1, Math.min(WINDOW_MS, at - warmupEnd));
+  const mbps = (bytes * 8) / (spanMs / 1000) / 1_000_000;
+  return { t: Math.max(0, Math.round(at - w.origin)), mbps: +Math.max(0, mbps).toFixed(2), lane };
 }
 
-/** Average of the stable part, discarding the fastest and slowest decile. */
-function stableRate(w: RateWindow, stableBytes: number, stableMs: number): number {
-  const values = [...w.rates].sort((a, b) => a - b);
-  const trim = Math.floor(values.length * 0.1);
-  const kept = values.slice(trim, Math.max(trim + 1, values.length - trim)).filter(Number.isFinite);
-  const fromRates = kept.length ? kept.reduce((a, b) => a + b, 0) / kept.length : 0;
-  const fromBytes = stableMs > 0 ? (stableBytes * 8) / (stableMs / 1000) / 1_000_000 : 0;
-  return Math.max(0, Math.min(fromRates || fromBytes, fromBytes || fromRates));
+/** Bytes actually transferred in the stable window divided by its real duration. */
+function stableRate(stableBytes: number, stableMs: number): number {
+  return stableMs > 0 ? Math.max(0, (stableBytes * 8) / (stableMs / 1000) / 1_000_000) : 0;
 }
 
 function cap(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
 
 @Injectable({ providedIn: 'root' })
 export class MeasurementService {
-  /** Real byte counting from the Cloudflare edge with no-store responses and capped parallel streams. */
+  /** Streamed, uncached payload bytes; 4 parallel connections, warm-up excluded. */
   async download(opts: ThroughputOptions): Promise<ThroughputResult> {
     const { url, durationMs, warmupMs, startedAt, signal, onSample } = opts;
-    const w = createWindow();
+    const origin = opts.timelineStart ?? startedAt;
+    const w = createWindow(origin);
     const warmupEnd = startedAt + warmupMs;
     const streams = cap(Math.round(opts.connections) || 4, 4, 6);
     const samples: SpeedSample[] = [];
     let interruptions = 0;
     let seq = 0;
-    // Small response chunks keep each stream read below one browser task quanta.
-    let chunk = 32 * 1024;
+    let chunk = 1024 * 1024;
     const active = new Set<AbortController>();
 
-    const sampler = setInterval(() => {
+    const sampler = window.setInterval(() => {
       const sample = sampleWindow(w, performance.now(), warmupEnd, 'download');
-      if (sample) samples.push(sample), onSample(sample);
+      if (sample) { samples.push(sample); onSample(sample); }
     }, SAMPLE_MS);
 
     const worker = async () => {
@@ -106,8 +107,7 @@ export class MeasurementService {
         const onAbort = () => ctrl.abort();
         signal.addEventListener('abort', onAbort, { once: true });
         try {
-          const size = chunk;
-          const res = await fetch(`${url}?bytes=${size}&n=${++seq}&r=${Math.random()}`, {
+          const res = await fetch(`${url}?bytes=${chunk}&n=${++seq}&r=${Math.random()}`, {
             cache: 'no-store', signal: ctrl.signal,
             headers: { 'Cache-Control': 'no-cache, no-transform', Accept: 'application/octet-stream' },
           });
@@ -118,14 +118,16 @@ export class MeasurementService {
             if (done) break;
             addBytes(w, value.byteLength, performance.now(), warmupEnd);
           }
-          if (signal.aborted || performance.now() - startedAt >= durationMs) {
+          if (signal.aborted) {
             try { await reader.cancel(); } catch { /* stream already closed */ }
+          } else if (performance.now() - startedAt >= durationMs) {
+            // Drain the in-flight chunk instead of cancelling it: no failed requests
+            // in DevTools, and no counted bytes after the measurement window.
+            try { while (!(await reader.read()).done) { /* discard */ } } catch { /* stream closed */ }
           }
-          const elapsed = (performance.now() - startedAt) / 1000;
-          if (elapsed > 0) {
-            const perStream = w.stableBytes / Math.max(0.1, elapsed - warmupMs / 1000) / streams;
-            chunk = Math.round(cap(perStream * 0.35, 16 * 1024, 128 * 1024) / 16384) * 16384;
-          }
+          const elapsed = Math.max(0.1, (performance.now() - startedAt - warmupMs) / 1000);
+          const bytesPerSecond = w.stableBytes / elapsed;
+          chunk = Math.round(cap(bytesPerSecond * 1.15, 256 * 1024, 4 * 1024 * 1024) / 65536) * 65536;
         } catch {
           if (!signal.aborted) interruptions++;
         } finally {
@@ -141,19 +143,18 @@ export class MeasurementService {
       clearInterval(sampler);
       for (const c of active) c.abort();
     }
-    const elapsed = performance.now() - startedAt;
-    const stableMs = Math.max(0, elapsed - warmupMs);
+    const stableMs = Math.max(0, performance.now() - startedAt - warmupMs);
     return {
-      bytes: w.stableBytes, samples,
-      durationMs: stableMs, interruptions,
-      mbps: stableRate(w, w.stableBytes, stableMs),
+      bytes: w.stableBytes, samples, durationMs: stableMs, interruptions,
+      mbps: stableRate(w.stableBytes, stableMs),
     };
   }
 
-  /** XHR upload progress plus the edge's acknowledged byte count — no fabricated throughput. */
+  /** XHR progress is sampled for the graph; the edge's acknowledged bytes set the final rate. */
   async upload(opts: ThroughputOptions & { payload: Blob }): Promise<ThroughputResult> {
     const { url, payload, durationMs, warmupMs, startedAt, signal, onSample } = opts;
-    const w = createWindow();
+    const origin = opts.timelineStart ?? startedAt;
+    const w = createWindow(origin);
     const warmupEnd = startedAt + warmupMs;
     const streams = cap(Math.round(opts.connections) || 4, 4, 6);
     const samples: SpeedSample[] = [];
@@ -163,23 +164,21 @@ export class MeasurementService {
     let acknowledgedStable = 0;
     const active = new Set<XMLHttpRequest>();
 
-    const sampler = setInterval(() => {
+    const sampler = window.setInterval(() => {
       const sample = sampleWindow(w, performance.now(), warmupEnd, 'upload');
-      if (sample) samples.push(sample), onSample(sample);
+      if (sample) { samples.push(sample); onSample(sample); }
     }, SAMPLE_MS);
 
     const send = () => new Promise<void>(resolve => {
       const xhr = new XMLHttpRequest();
       active.add(xhr);
       let counted = 0;
-      let phaseStart = 0;
       xhr.open('POST', `${url}?bytes=${payload.size}&n=${++n}`);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('Cache-Control', 'no-cache');
       xhr.upload.onprogress = e => {
         if (!e.lengthComputable) return;
         const now = performance.now();
-        if (!phaseStart) phaseStart = now;
         const delta = Math.max(0, e.loaded - counted);
         counted = e.loaded;
         addBytes(w, delta, now, warmupEnd);
@@ -188,12 +187,13 @@ export class MeasurementService {
       const finish = () => {
         active.delete(xhr);
         if (xhr.status >= 200 && xhr.status < 300) {
-          // The edge acknowledges the exact byte count in the JSON body; no custom
-          // response header is read, so browsers never log unsafe-header warnings.
           try {
             const received = Number((JSON.parse(xhr.responseText || '{}') as { received?: number }).received);
-            if (Number.isFinite(received)) acknowledgedStable += cap(received, 0, payload.size);
-          } catch { /* acknowledgement is optional; XHR upload progress remains authoritative */ }
+            if (Number.isFinite(received)) {
+              acknowledgedStable += cap(received, 0, payload.size);
+              if (performance.now() >= warmupEnd) addBytes(w, 0, performance.now(), warmupEnd);
+            }
+          } catch { /* progress bytes remain authoritative when no acknowledgement is returned */ }
         } else if (!signal.aborted) interruptions++;
         resolve();
       };
@@ -210,33 +210,52 @@ export class MeasurementService {
       clearInterval(sampler);
       if (signal.aborted) active.forEach(x => x.abort());
     }
-    const elapsed = performance.now() - startedAt;
-    const stableMs = Math.max(0, elapsed - warmupMs);
-    const ratio = sentStable > 0 ? cap(acknowledgedStable / sentStable, 0, 1) : 0;
-    const measuredBytes = Math.round(w.stableBytes * ratio);
+    const stableMs = Math.max(0, performance.now() - startedAt - warmupMs);
+    const ratio = sentStable > 0 ? cap(acknowledgedStable / sentStable, 0, 1) : 1;
     const adjusted = samples.map(s => ({ ...s, mbps: +(s.mbps * ratio).toFixed(2) }));
+    const acknowledgedBytes = Math.round(acknowledgedStable * cap(stableMs / Math.max(1, durationMs - warmupMs), 0, 1));
     return {
-      bytes: measuredBytes, samples: adjusted, durationMs: stableMs, interruptions,
-      mbps: stableRate(w, w.stableBytes * ratio, stableMs),
+      bytes: Math.round(w.stableBytes * ratio) || acknowledgedBytes,
+      samples: adjusted, durationMs: stableMs, interruptions,
+      mbps: stableRate(acknowledgedStable || w.stableBytes * ratio, stableMs),
     };
   }
 
-  /** Client-side RTT samples against a real edge endpoint. */
-  async ping(url: string, count: number, signal: AbortSignal, _kind?: string): Promise<number[]> {
+  /**
+   * Warm up the connection, then measure Resource Timing request→first-byte on
+   * distinct no-store probes. The median of 12+ samples removes cold-start and
+   * queueing outliers; responseStart is zero without Timing-Allow-Origin, so the
+   * edge worker exposes it to browsers.
+   */
+  async ping(url: string, count: number, signal: AbortSignal, warmup: boolean | string = true): Promise<number[]> {
+    // Repeated tests must not lose newest probes to the browser's Resource Timing buffer.
+    try {
+      if (typeof performance.setResourceTimingBufferSize === 'function') performance.setResourceTimingBufferSize(2000);
+      if (count >= 8) performance.clearResourceTimings();
+    } catch { /* buffer management is best-effort */ }
+    // A string here is a legacy tool label; only the literal true asks for warm-up.
+    if (warmup === true) {
+      try {
+        const warmUrl = `${url}?bytes=256&warm=${Date.now()}`;
+        await fetch(warmUrl, { cache: 'no-store', signal, headers: { 'Cache-Control': 'no-cache' } });
+      } catch { /* a failed warm-up is ignored; real samples still decide */ }
+    }
     const values: number[] = [];
     for (let i = 0; i < count; i++) {
       if (signal.aborted) break;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 3000);
+      const timer = window.setTimeout(() => ctrl.abort(), 3000);
       const combined = typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, ctrl.signal]) : signal;
-      const t0 = performance.now();
+      const probeUrl = `${url}?bytes=256&p=${i}&t=${Date.now()}-${Math.random().toString(36).slice(2)}`;
       try {
-        const res = await fetch(`${url}?bytes=256&r=${i}&t=${Date.now()}`, {
-          cache: 'no-store', signal: combined, headers: { 'Cache-Control': 'no-cache' },
-        });
+        const res = await fetch(probeUrl, { cache: 'no-store', signal: combined, headers: { 'Cache-Control': 'no-cache' } });
         if (!res.ok) continue;
         await res.arrayBuffer();
-        values.push(+(performance.now() - t0).toFixed(1));
+        const entry = performance.getEntriesByName(probeUrl).at(-1) as PerformanceResourceTiming | undefined;
+        const rtt = entry && entry.responseStart > entry.requestStart && entry.requestStart > 0
+          ? entry.responseStart - entry.requestStart
+          : entry?.duration;
+        if (typeof rtt === 'number' && Number.isFinite(rtt) && rtt > 0) values.push(+rtt.toFixed(1));
       } catch { if (signal.aborted) break; }
       finally { clearTimeout(timer); }
     }
@@ -252,7 +271,7 @@ export class MeasurementService {
       const ctrl = new AbortController();
       const onAbort = () => ctrl.abort();
       signal.addEventListener('abort', onAbort, { once: true });
-      const timer = setTimeout(() => ctrl.abort(), 2000);
+      const timer = window.setTimeout(() => ctrl.abort(), 2000);
       try {
         const res = await fetch(`${url}?bytes=256&probe=${i}&t=${Date.now()}`, { cache: 'no-store', signal: ctrl.signal });
         if (!res.ok) lost++; else await res.arrayBuffer();
@@ -262,7 +281,7 @@ export class MeasurementService {
     return { sent, lost, method: 'HTTP/HTTPS sequenced probes (application-layer approximation, not ICMP)' };
   }
 
-  /** Real Cloudflare metadata exposed on the no-store measurement response. */
+  /** Cloudflare metadata exposed on every no-store measurement response. */
   async edgeMeta(url: string, signal: AbortSignal): Promise<EdgeMeta | null> {
     try {
       const res = await fetch(`${url}?bytes=256&r=meta&t=${Date.now()}`, { cache: 'no-store', signal });
@@ -278,6 +297,27 @@ export class MeasurementService {
         timezone: h('timezone') ?? null,
       };
       return Object.values(meta).some(Boolean) ? meta : null;
+    } catch { return null; }
+  }
+
+  /** Cloudflare trace: real edge city/colo/IP from the same Worker, browser-readable CORS. */
+  async trace(base: string, signal: AbortSignal): Promise<TraceInfo | null> {
+    try {
+      const res = await fetch(`${base.replace(/\/$/, '')}/trace?t=${Date.now()}`, { cache: 'no-store', signal });
+      if (!res.ok) return null;
+      const text = await res.text();
+      const fields = new Map(text.split('\n').map(line => {
+        const at = line.indexOf('=');
+        return at < 0 ? ['', ''] : [line.slice(0, at).trim(), line.slice(at + 1).trim()];
+      }));
+      const ip = fields.get('ip') || null;
+      const country = fields.get('country') || null;
+      if (!ip && !country) return null;
+      return {
+        ip, country, city: fields.get('city') || null, colo: fields.get('colo') || null,
+        asn: fields.get('asn') || null, organization: fields.get('org') || null,
+        timezone: null, httpProtocol: fields.get('http') || null, tlsVersion: fields.get('tls') || null,
+      };
     } catch { return null; }
   }
 

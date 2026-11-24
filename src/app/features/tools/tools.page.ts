@@ -5,13 +5,12 @@ import { AppConfigService } from '../../core/services/app-config.service';
 import { MeasurementService } from '../../core/services/measurement.service';
 import { NetworkInfoService } from '../../core/services/network-info.service';
 import { SeoService } from '../../core/services/seo.service';
-import { RouterLink } from '@angular/router';
 
 type AsyncState<T> = { loading: boolean; error: string | null; data: T | null };
 
 @Component({
   selector: 'nv-tools-page',
-  imports: [IconComponent, RouterLink],
+  imports: [IconComponent],
   template: `
     <div class="nv-container">
       <div class="page-head"><span class="eyebrow">Network toolkit</span><h1>Network tools</h1><p>Real lookups and live measurements. No sample results — every value comes from a request or measurement made right now.</p></div>
@@ -120,7 +119,7 @@ type AsyncState<T> = { loading: boolean; error: string | null; data: T | null };
             <div><dt>CPU threads</dt><dd>{{ s.browser.hardwareConcurrency ?? 'not reported' }}</dd></div>
             <div><dt>Online</dt><dd>{{ s.browser.online ? 'Yes' : 'No' }}</dd></div>
           </dl>
-          <p class="tiny muted">For local network and Wi-Fi diagnostics see <a routerLink="/diagnostics">Diagnostics</a>.</p>
+          <p class="tiny muted">These details are read directly from the browser; no connection type is inferred from speed.</p>
         }
       </section>
     </div>`,

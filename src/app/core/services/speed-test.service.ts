@@ -12,13 +12,14 @@ import { AiService } from './ai.service';
 import { ResultsService } from './results.service';
 import { SoundService } from './sound.service';
 
+const INTRO_MS = 2050;
 const WARMUP_MS = 1500;
 const DOWNLOAD_MS = 8000;
 const UPLOAD_MS = 8000;
-const PING_SAMPLES = 12;
+const PING_SAMPLES = 14;
 const PROBES = 16;
 const STREAMS = 4;
-const UPLOAD_PAYLOAD_BYTES = 256 * 1024;
+const UPLOAD_PAYLOAD_BYTES = 1024 * 1024;
 
 @Injectable({ providedIn: 'root' })
 export class SpeedTestService implements OnDestroy {
@@ -51,6 +52,7 @@ export class SpeedTestService implements OnDestroy {
 
   private get downUrl(): string { return `${this.config.speedBase}/__down`; }
   private get upUrl(): string { return `${this.config.speedBase}/__up`; }
+  private get pingUrl(): string { return `${this.config.speedBase}/__ping`; }
 
   /** Publishing happens at the measurement sample rate (4 Hz), never per animation frame. */
   private publish(sample: SpeedSample): void {
@@ -85,8 +87,8 @@ export class SpeedTestService implements OnDestroy {
     this.sound.play('start');
 
     try {
-      // Intro sweep runs once, before a single measurement request is made.
-      await this.wait(1000, signal);
+      // Dashboard startup sweep runs once, before a single measurement request is made.
+      await this.wait(INTRO_MS, signal);
       if (signal.aborted) return;
       this.zone.run(() => { this.intro.set(false); this.phase.set('ping'); this.progress.set(8); });
 
@@ -94,10 +96,15 @@ export class SpeedTestService implements OnDestroy {
       const server = this.servers.edgeServer(edgeMeta);
       this.zone.run(() => this.currentServer.set(server));
 
-      const pingValues = await this.measure.ping(this.downUrl, PING_SAMPLES, signal);
+      const timelineStart = performance.now();
+      // One warm-up request opens TLS and the connection before sampling starts.
+      const pingValues = await this.measure.ping(this.pingUrl, PING_SAMPLES, signal);
       if (signal.aborted) return;
       if (!pingValues.length) throw new Error('The edge did not return any valid latency samples.');
       const pingStats = MeasurementService.stats(pingValues) as LatencyStats;
+      // Headline ping is the median of 14 Resource Timing samples, not an average
+      // polluted by the first connection or HTTP queueing.
+      pingStats.avg = pingStats.median ?? pingStats.avg;
       this.zone.run(() => this.progress.set(16));
 
       // ---- DOWNLOAD ----
@@ -111,7 +118,7 @@ export class SpeedTestService implements OnDestroy {
       const startedAt = performance.now();
       const download = await this.measure.download({
         url: this.downUrl, connections: STREAMS, durationMs: DOWNLOAD_MS, warmupMs: WARMUP_MS,
-        startedAt, signal, onSample: s => this.publish(s),
+        startedAt, timelineStart, signal, onSample: s => this.publish(s),
       });
       stopLoadedDownload();
       if (signal.aborted) return;
@@ -134,7 +141,7 @@ export class SpeedTestService implements OnDestroy {
       const upload = await this.measure.upload({
         url: this.upUrl, payload: MeasurementService.randomPayload(UPLOAD_PAYLOAD_BYTES),
         connections: STREAMS, durationMs: UPLOAD_MS, warmupMs: WARMUP_MS,
-        startedAt: uploadStartedAt, signal, onSample: s => this.publish(s),
+        startedAt: uploadStartedAt, timelineStart, signal, onSample: s => this.publish(s),
       });
       stopLoadedUpload();
       if (signal.aborted) return;
@@ -142,7 +149,7 @@ export class SpeedTestService implements OnDestroy {
 
       // ---- DIAGNOSTICS ----
       this.zone.run(() => { this.phase.set('diagnostics'); this.progress.set(90); });
-      const loss = await this.measure.probeLoss(this.downUrl, PROBES, signal);
+      const loss = await this.measure.probeLoss(this.pingUrl, PROBES, signal);
       if (signal.aborted) return;
       const allSamples = [...download.samples, ...upload.samples];
       const stability = this.computeStability(allSamples, download.interruptions + upload.interruptions);
@@ -175,8 +182,10 @@ export class SpeedTestService implements OnDestroy {
       const saved = await this.results.persist(result);
       this.zone.run(() => {
         this.score.set(score); this.analysis.set(analysis);
-        this.result.set(saved); this.activeMetric.set(null); this.liveMbps.set(0);
-        this.chartSamples.set([...download.samples, ...upload.samples]);
+        this.result.set(saved); this.activeMetric.set(null);
+        // The final download stays on the meter and drives the needle, arc, number and colour.
+        this.liveMbps.set(measurements.downloadMbps ?? 0);
+        this.chartSamples.set([...download.samples, ...upload.samples].sort((a, b) => a.t - b.t));
         this.progress.set(100); this.phase.set('complete'); this.intro.set(false);
       });
       this.sound.play('complete');
@@ -197,7 +206,7 @@ export class SpeedTestService implements OnDestroy {
       if (signal.aborted || inFlight || out.length >= 24) return;
       inFlight = true;
       try {
-        const values = await this.measure.ping(this.downUrl, 1, signal);
+        const values = await this.measure.ping(this.pingUrl, 2, signal, false);
         out.push(...values);
       } catch { /* a failed loaded probe is simply omitted */ }
       finally { inFlight = false; }
@@ -233,6 +242,7 @@ export class SpeedTestService implements OnDestroy {
     this.loadedStop?.(); this.loadedStop = null;
     for (const id of this.timers) clearTimeout(id), clearInterval(id);
     this.timers.clear();
+    this.intro.set(false);
   }
 
   ngOnDestroy(): void { this.controller?.abort(); this.cleanup(); }

@@ -6,7 +6,7 @@ import { CountUpDirective } from '../../shared/count-up/count-up';
 import { SpeedTestService } from '../../core/services/speed-test.service';
 import { ServerService } from '../../core/services/server.service';
 import { CompanionService } from '../../core/services/companion.service';
-import { NetworkInfoService, connectionModeLabel } from '../../core/services/network-info.service';
+import { NetworkInfoService, connectionModeLabel, connectionModeReason } from '../../core/services/network-info.service';
 import { ScoringService } from '../../core/services/scoring.service';
 import { SeoService } from '../../core/services/seo.service';
 import { CompanionDevice } from '../../core/services/companion.service';
@@ -30,6 +30,9 @@ import { CompanionDevice } from '../../core/services/companion.service';
             [max]="1000"
             [label]="phaseLabel()"
             [intro]="test.intro()"
+            [showResult]="test.phase() === 'complete' && !!test.result()"
+            [resultDown]="test.result()?.measurements.downloadMbps ?? 0"
+            [resultUp]="test.result()?.measurements.uploadMbps ?? 0"
             unit="Mbps" />
           <div class="phase-steps" aria-label="Test progress">
             @for (p of steps; track p.key) {
@@ -128,7 +131,7 @@ import { CompanionDevice } from '../../core/services/companion.service';
               @if (net.snapshot()?.preciseCity; as city) { {{ city }} <em>Precise</em> }
               @else { {{ location() }} <em>Approx. (from IP)</em> }
             </span>
-            <span><strong>Mode</strong> {{ mode() }}</span>
+            <span [title]="modeReason()"><strong>Mode</strong> {{ mode() }}</span>
           </div>
 
           <div class="location-row small">
@@ -160,10 +163,10 @@ import { CompanionDevice } from '../../core/services/companion.service';
                 }
               </div>
             </div>
-          } @else if (companion.available() === false) {
+          } @else {
             <div class="install-card small">
               <nv-icon name="wifi" [size]="14"/>
-              <span><strong>Install Netvelox companion</strong> to see WiFi name and connected devices. Browsers cannot read them. Double-click <code>start-companion.bat</code> or run <code>npm run companion</code>; this page pairs automatically.</span>
+              <span><strong>Install Netvelox companion</strong> to see WiFi name and connected devices. Browsers cannot read them. Run <code>npm run companion</code>, pair it once, then refresh this page.</span>
             </div>
           }
         </div>
@@ -181,7 +184,7 @@ import { CompanionDevice } from '../../core/services/companion.service';
     .server-bar .grow { flex: 1; min-width: 0; }
     .server-bar .input { min-height: 32px; padding: .25rem .5rem; font-size: .76rem; }
     .server-bar label { font-size: .68rem; }
-    .server-location { white-space: nowrap; color: var(--nv-muted); font-size: .7rem; }
+    .server-location { display: inline-block; min-width: 6.5rem; text-align: right; white-space: nowrap; color: var(--nv-muted); font-size: .7rem; }
     .compact-alert { padding: .35rem .6rem; font-size: .75rem; }
     .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .45rem; }
     .metric-grid .stat { padding: .42rem .6rem; border-radius: 9px; min-width: 0; }
@@ -192,7 +195,7 @@ import { CompanionDevice } from '../../core/services/companion.service';
     .metric-card { position: relative; overflow: hidden; }
     .metric-card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:2px; background: var(--metric-color, var(--nv-border-strong)); }
     .go-row { display: grid; justify-items: center; gap: .25rem; }
-    .btn--lg { min-height: 36px; padding: 0 1.4rem; font-size: .82rem; border-radius: 10px; }
+    .btn--lg { min-height: 44px; padding: 0 1.4rem; font-size: .82rem; border-radius: 10px; }
     .go-btn { min-width: 132px; }
     .phase-steps { display: flex; justify-content: center; gap: .25rem; }
     .phase-step { font-size: .56rem; text-transform: uppercase; letter-spacing: .06em; padding: .16rem .4rem; border-radius: 99px; border: 1px solid var(--nv-muted); color: var(--nv-muted); }
@@ -215,9 +218,10 @@ import { CompanionDevice } from '../../core/services/companion.service';
     .device-list strong { color: var(--nv-muted); margin-right: .2rem; }
     .device-chips { display: flex; gap: .3rem; flex-wrap: wrap; max-height: 40px; overflow: hidden; }
     .device-chip { display: inline-flex; align-items: center; gap: .2rem; padding: .1rem .35rem; border-radius: 99px; background: var(--nv-panel-3); font-family: var(--nv-mono); font-size: .6rem; }
+    @media (max-width: 1180px) { .btn--lg, .btn--link.btn--sm, .server-bar .input { min-height: 44px; } }
     @media (max-width: 1100px) { .hero__grid { grid-template-columns: 240px minmax(0,1fr); gap: .8rem; } }
     @media (max-width: 900px) { .hero__grid { grid-template-columns: 1fr; } .meter-column { max-width: 270px; margin-inline: auto; width: 100%; } }
-    @media (max-width: 640px) { .hero__head h1 { font-size: 1.4rem; } .metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } .connection-strip { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+    @media (max-width: 640px) { .hero__head h1 { font-size: 1.4rem; } .metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } .connection-strip { grid-template-columns: 1fr; } }
   `],
 })
 export class HomePage implements OnInit, OnDestroy {
@@ -238,12 +242,16 @@ export class HomePage implements OnInit, OnDestroy {
   };
 
   readonly mode = signal(connectionModeLabel());
+  readonly modeReason = signal(connectionModeReason());
   readonly banner = computed(() => {
     const errors = [this.test.error(), this.net.error()].filter((v): v is string => !!v);
     return errors.length ? [...new Set(errors)].join(' · ') : null;
   });
 
-  private readonly refreshTimer = setInterval(() => this.mode.set(connectionModeLabel()), 5000);
+  private readonly refreshTimer = setInterval(() => {
+    this.mode.set(connectionModeLabel());
+    this.modeReason.set(connectionModeReason());
+  }, 5000);
 
   constructor() {
     this.seo.set({ title: 'Internet Speed Test', description: 'Real internet speed test measuring download, upload, latency, jitter, probe loss and loaded latency against the Cloudflare edge.', path: '/' });
@@ -251,9 +259,9 @@ export class HomePage implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     void this.servers.discover();
-    void this.net.collect();
-    void this.net.refreshPermission();
-    void this.companion.detect();
+    // Network lookup and companion detection never block first paint.
+    setTimeout(() => void this.net.collect(), 0);
+    setTimeout(() => void this.companion.detect(), 800);
   }
 
   ngOnDestroy(): void { clearInterval(this.refreshTimer); }

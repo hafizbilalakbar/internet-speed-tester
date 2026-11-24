@@ -35,6 +35,9 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, Cache-Control, Pragma",
   "Access-Control-Expose-Headers": "Content-Length, Content-Type, server-timing, cf-meta-ip, cf-meta-country, cf-meta-city, cf-meta-colo, cf-meta-asn, cf-meta-postalCode, cf-meta-timezone, country, city, colo, asn",
   "Access-Control-Max-Age": "86400",
+  // Required for the browser's Resource Timing API on cross-origin probes.
+  // Without it responseStart/requestStart are zeroed and ping includes full HTTP overhead.
+  "Timing-Allow-Origin": "*",
 };
 
 function makeHeaders(extra?: HeadersInit): Headers {
@@ -247,7 +250,9 @@ export async function handleRequest(request: Request): Promise<Response> {
         return await handleUpload(request);
       case "/__ping":
         if (!isGetOrHead(request.method)) return methodNotAllowed("GET, HEAD");
-        return withoutBodyForHead(request, textResponse("pong\n"));
+        // Keep the response tiny but with a real body so Resource Timing measures
+        // request → first byte instead of only connection setup.
+        return withoutBodyForHead(request, handleDownload(request, url));
       case "/meta":
         if (!isGetOrHead(request.method)) return methodNotAllowed("GET, HEAD");
         return withoutBodyForHead(request, jsonResponse(metadataPayload(request)));

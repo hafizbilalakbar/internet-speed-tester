@@ -17,24 +17,17 @@ import { IconComponent } from '../../shared/icon/icon';
             <div class="footer-badges"><span class="chip chip--good"><nv-icon name="shield" [size]="13"/> Privacy-first</span><span class="chip"><nv-icon name="activity" [size]="13"/> Real transfers</span></div>
           </div>
           <div><h4>Test</h4>
-            <a routerLink="/">Internet Speed Test</a><a routerLink="/wifi-speed-test">Wi-Fi Speed Test</a>
-            <a routerLink="/download-speed-test">Download Test</a><a routerLink="/upload-speed-test">Upload Test</a>
-            <a routerLink="/ping-test">Ping Test</a><a routerLink="/jitter-test">Jitter Test</a>
+            <a routerLink="/">Internet Speed Test</a><a routerLink="/history">Results &amp; History</a>
           </div>
           <div><h4>Platform</h4>
             <a routerLink="/servers">Test Servers</a><a routerLink="/tools">Network Tools</a>
-            <a routerLink="/diagnostics">Diagnostics</a><a routerLink="/analytics">Global Analytics</a>
-            <a routerLink="/history">My Results</a><a routerLink="/status">Service Status</a>
           </div>
           <div><h4>Learn</h4>
-            <a routerLink="/guides">All Guides</a><a routerLink="/guides/understanding-jitter">Understanding Jitter</a>
-            <a routerLink="/guides/internet-troubleshooting">Troubleshooting</a><a routerLink="/guides/isp-information">ISP Information</a>
-            <a routerLink="/about">How It Works</a>
+            <a routerLink="/guides">Internet Guides</a><a routerLink="/about">How It Works</a>
           </div>
           <div><h4>Company &amp; legal</h4>
             <a routerLink="/about">About</a><a routerLink="/privacy">Privacy Policy</a>
-            <a routerLink="/terms">Terms of Service</a><a routerLink="/cookies">Cookie Policy</a>
-            <a routerLink="/accessibility">Accessibility</a><a routerLink="/admin">Admin</a>
+            <a routerLink="/terms">Terms of Service</a>
           </div>
         </div>
         <div class="footer-bottom">

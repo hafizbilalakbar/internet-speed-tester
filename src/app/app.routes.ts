@@ -1,29 +1,19 @@
 import { Routes } from '@angular/router';
+import { HomePage } from './features/home/home.page';
 
+/** Only real, maintained destinations. No SEO filler or stub pages. */
 export const routes: Routes = [
-  { path: '', title: 'Internet Speed Test', loadComponent: () => import('./features/home/home.page').then(m => m.HomePage) },
-  { path: 'speed-test', title: 'Internet Speed Test', loadComponent: () => import('./features/home/home.page').then(m => m.HomePage) },
-  { path: 'wifi-speed-test', title: 'Wi-Fi Speed Test', loadComponent: () => import('./features/service/service.page').then(m => m.ServicePage) },
-  { path: 'download-speed-test', title: 'Download Speed Test', loadComponent: () => import('./features/service/service.page').then(m => m.ServicePage) },
-  { path: 'upload-speed-test', title: 'Upload Speed Test', loadComponent: () => import('./features/service/service.page').then(m => m.ServicePage) },
-  { path: 'ping-test', title: 'Ping Test', loadComponent: () => import('./features/service/service.page').then(m => m.ServicePage) },
-  { path: 'jitter-test', title: 'Jitter Test', loadComponent: () => import('./features/service/service.page').then(m => m.ServicePage) },
-  { path: 'servers', title: 'Test Servers', loadComponent: () => import('./features/servers/servers.page').then(m => m.ServersPage) },
-  { path: 'tools', title: 'Network Tools', loadComponent: () => import('./features/tools/tools.page').then(m => m.ToolsPage) },
-  { path: 'diagnostics', title: 'Network Diagnostics', loadComponent: () => import('./features/diagnostics/diagnostics.page').then(m => m.DiagnosticsPage) },
-  { path: 'history', title: 'Test History', loadComponent: () => import('./features/history/history.page').then(m => m.HistoryPage) },
-  { path: 'analytics', title: 'Global Internet Analytics', loadComponent: () => import('./features/analytics/analytics.page').then(m => m.AnalyticsPage) },
-  { path: 'status', title: 'Service Status', loadComponent: () => import('./features/status/status.page').then(m => m.StatusPage) },
-  { path: 'guides', title: 'Internet Guides', loadComponent: () => import('./features/guides/guides.page').then(m => m.GuidesPage) },
-  { path: 'guides/:slug', title: 'Guide', loadComponent: () => import('./features/guides/guide-detail.page').then(m => m.GuideDetailPage) },
-  { path: 'about', title: 'About Netvelox', data: { page: 'about' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
-  { path: 'terms', title: 'Terms of Service', data: { page: 'terms' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
-  { path: 'cookies', title: 'Cookie Policy', data: { page: 'cookies' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
-  { path: 'accessibility', title: 'Accessibility', data: { page: 'accessibility' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
-  { path: 'contact', title: 'Contact', loadComponent: () => import('./features/legal/contact.page').then(m => m.ContactPage) },
-  { path: 'privacy', title: 'Privacy Policy', loadComponent: () => import('./features/guides/privacy.page').then(m => m.PrivacyPage) },
+  // The landing test is eager so its layout is present on first paint (no route-chunk shift).
+  { path: '', title: 'Internet Speed Test', component: HomePage },
+  { path: 'speed-test', title: 'Internet Speed Test', component: HomePage },
+  { path: 'history', title: 'Results & History', loadComponent: () => import('./features/history/history.page').then(m => m.HistoryPage) },
   { path: 'result/:token', title: 'Test Result', loadComponent: () => import('./features/results/results.page').then(m => m.ResultsPage) },
   { path: 'r/:id', title: 'Test Result', loadComponent: () => import('./features/results/results.page').then(m => m.ResultsPage) },
-  { path: 'admin', title: 'Admin Console', loadComponent: () => import('./features/admin/admin.page').then(m => m.AdminPage) },
+  { path: 'tools', title: 'Network Tools', loadComponent: () => import('./features/tools/tools.page').then(m => m.ToolsPage) },
+  { path: 'servers', title: 'Test Servers', loadComponent: () => import('./features/servers/servers.page').then(m => m.ServersPage) },
+  { path: 'guides', title: 'Internet Guides', loadComponent: () => import('./features/guides/guides.page').then(m => m.GuidesPage) },
+  { path: 'about', title: 'About Netvelox', data: { page: 'about' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
+  { path: 'privacy', title: 'Privacy Policy', loadComponent: () => import('./features/guides/privacy.page').then(m => m.PrivacyPage) },
+  { path: 'terms', title: 'Terms of Service', data: { page: 'terms' }, loadComponent: () => import('./features/legal/legal.page').then(m => m.LegalPage) },
   { path: '**', title: 'Page Not Found', loadComponent: () => import('./features/not-found/not-found.page').then(m => m.NotFoundPage) },
 ];

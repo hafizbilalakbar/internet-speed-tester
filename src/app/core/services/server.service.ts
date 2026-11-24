@@ -23,7 +23,7 @@ export class ServerService {
     return {
       id: `cf-edge${colo ? `-${colo.toLowerCase()}` : ''}`,
       name: colo ? `Cloudflare Edge · ${colo}` : 'Cloudflare Edge',
-      city: meta?.city ?? 'Edge network',
+      city: meta?.city ?? (colo ? `Colo ${colo}` : 'Nearest Cloudflare edge'),
       country: meta?.country ?? '',
       countryCode: meta?.country ?? '',
       provider: 'Cloudflare',

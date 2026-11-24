@@ -53,7 +53,8 @@ export class CompanionService {
     try {
       let token: string | null = null;
       try { token = localStorage.getItem(TOKEN_KEY); } catch { /* storage blocked */ }
-      if (!token) token = await this.pair();
+      // Only probe the agent when the user has explicitly paired it. Blind health
+      // probes on every page load produce CORS errors when no companion is running.
       if (!token) { this.available.set(false); return; }
       this.token = token;
       const res = await fetch(`${this.base}/summary`, {
@@ -92,19 +93,5 @@ export class CompanionService {
     this.available.set(false);
     this.message.set(null);
     try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(URL_KEY); } catch { /* storage blocked */ }
-  }
-
-  private async pair(): Promise<string | null> {
-    try {
-      const res = await fetch(`${this.base}/health`, { signal: AbortSignal.timeout(600), cache: 'no-store' });
-      if (!res.ok) return null;
-      // The browser sends its own Origin header; the companion accepts only loopback origins.
-      const paired = await fetch(`${this.base}/pair`, {
-        signal: AbortSignal.timeout(600), cache: 'no-store',
-      });
-      if (!paired.ok) return null;
-      const body = await paired.json() as { token?: string };
-      return typeof body.token === 'string' && body.token.length > 8 ? body.token : null;
-    } catch { return null; }
   }
 }

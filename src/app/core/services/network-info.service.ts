@@ -1,7 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { AppConfigService } from './app-config.service';
 import { BrowserInfo, IpInfo, NetworkSnapshot } from '../models/models';
-import { MeasurementService } from './measurement.service';
+import { MeasurementService, TraceInfo } from './measurement.service';
 
 function emptyIp(family: 'IPv4' | 'IPv6'): IpInfo {
   return { ip: null, family, isp: null, asn: null, org: null, city: null, region: null, country: null, countryCode: null, latitude: null, longitude: null, timezone: null, source: null };
@@ -15,17 +15,33 @@ export function connectionModeLabel(): string {
     wifi: 'WiFi', ethernet: 'Ethernet', cellular: 'Cellular', wimax: 'WiMAX',
     bluetooth: 'Bluetooth', other: 'Other', none: 'Offline',
   };
-  if (map[type]) return map[type];
-  if (nav.connection && type === 'unknown') return 'Unknown (not exposed by browser)';
-  return 'Unknown (not exposed by browser)';
+  return map[type] ?? 'Unknown';
+}
+
+export function connectionModeReason(): string {
+  const nav = navigator as Navigator & { connection?: { type?: string; effectiveType?: string } };
+  return (nav.connection?.type ?? '').toLowerCase() === 'unknown'
+    || !nav.connection
+    ? 'Browsers do not expose the physical connection type (not exposed by browser).'
+    : 'Reported by the browser Network Information API.';
 }
 
 interface ProviderInfo {
   success?: boolean;
-  ip?: string; city?: string; region?: string; country?: string; country_code?: string;
+  ip?: string; city?: string; region?: string; country?: string; country_code?: string; loc?: string;
   isp?: string; org?: string; asn?: string; latitude?: number; longitude?: number; timezone?: string;
   connection?: { isp?: string; org?: string; asn?: string };
 }
+
+/** ipinfo.io returns "AS154453 Delta Broadband Private Limited" as one org string. */
+function splitOrg(org?: string | null): { isp: string | null; asn: string | null } {
+  const value = org?.trim();
+  if (!value) return { isp: null, asn: null };
+  const match = value.match(/^(AS\d+)\s+(.+)$/i);
+  return match ? { isp: match[2], asn: match[1].toUpperCase() } : { isp: value, asn: null };
+}
+
+interface ProviderResult { name: string; data: ProviderInfo | TraceInfo | null; error: string | null; }
 
 @Injectable({ providedIn: 'root' })
 export class NetworkInfoService {
@@ -35,6 +51,7 @@ export class NetworkInfoService {
   readonly snapshot = signal<NetworkSnapshot | null>(null);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
+  readonly edge = signal<TraceInfo | null>(null);
   readonly geoPermission = signal<PermissionState | 'unknown'>('unknown');
   readonly locating = signal(false);
 
@@ -47,54 +64,63 @@ export class NetworkInfoService {
     return await res.json() as T;
   }
 
+  /** Cloudflare trace first, then two independent public providers. Never blocks first paint. */
   async collect(): Promise<NetworkSnapshot> {
     if (this.loading()) return this.snapshot() ?? this.blank();
     this.loading.set(true); this.error.set(null);
     const previous = this.snapshot();
-    const [edge, v6, provider] = await Promise.allSettled([
-      this.measure.edgeMeta(`${this.config.speedBase}/__down`, AbortSignal.timeout(3500)),
-      this.detectIpv6(),
-      Promise.resolve(null as ProviderInfo | null),
+    const edgeBase = this.config.speedBase;
+    const results = await Promise.allSettled([
+      this.measure.trace(edgeBase, AbortSignal.timeout(4000)),
+      this.measure.edgeMeta(`${edgeBase}/__down`, AbortSignal.timeout(4000)),
+      this.getJson<ProviderInfo>('https://ipwho.is/', 4000),
+      this.getJson<ProviderInfo>('https://ipinfo.io/json', 4000),
     ]);
-    const ext = edge.status === 'fulfilled' ? edge.value : null;
-    let info = provider.status === 'fulfilled' ? provider.value : null;
-    const ip = ext?.ip ?? null;
-    if (ip) {
-      try {
-        const data = await this.getJson<ProviderInfo>(`https://ipwho.is/${encodeURIComponent(ip)}`, 3500);
-        if (data && data.success !== false) info = data;
-      } catch {
-        try { info = await this.getJson<ProviderInfo>(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, 3500); }
-        catch { info = null; }
-      }
-    }
+    const names = ['Cloudflare trace', 'Cloudflare edge headers', 'ipwho.is', 'ipinfo.io'];
+    const providers: ProviderResult[] = results.map((r, i) => r.status === 'fulfilled'
+      ? { name: names[i], data: r.value as ProviderInfo | TraceInfo | null, error: r.value ? null : 'no data' }
+      : { name: names[i], data: null, error: String((r.reason as Error)?.message ?? r.reason).slice(0, 80) });
+    const trace = (providers[0].data as TraceInfo | null) ?? null;
+    const edgeMeta = (providers[1].data as TraceInfo | null) ?? null;
+    const ipInfo = (providers[2].data as ProviderInfo | null)?.success !== false ? providers[2].data as ProviderInfo | null : null;
+    const fallbackInfo = providers[3].data as ProviderInfo | null;
+    const info = ipInfo ?? fallbackInfo;
+    const orgParts = splitOrg(info?.org);
+    const locParts = typeof info?.loc === 'string' ? info.loc.split(',').map(Number) : [];
+    const ip = trace?.ip ?? edgeMeta?.ip ?? info?.ip ?? null;
+    const v6 = await this.detectIpv6().catch(() => null);
+
+    const country = trace?.country ?? edgeMeta?.country ?? info?.country_code ?? info?.country ?? null;
+    const countryCode = (country ?? '').toUpperCase().slice(0, 2) || null;
+    const asn = trace?.asn ?? edgeMeta?.asn ?? orgParts.asn ?? info?.connection?.asn ?? info?.asn ?? null;
     const ipv4: IpInfo = {
       ...emptyIp('IPv4'),
       ip,
-      isp: info?.isp ?? info?.connection?.isp ?? info?.org ?? null,
-      asn: ext?.asn ? `AS${ext.asn}` : (info?.connection?.asn ? `AS${info.connection.asn}` : info?.asn ?? null),
-      org: info?.org ?? info?.connection?.org ?? null,
-      // Cloudflare trace wins for country; city is from IP and always labelled approximate.
-      country: ext?.country ?? info?.country ?? null,
-      countryCode: (ext?.country ?? info?.country_code ?? '').toUpperCase() || null,
-      city: ext?.city ?? info?.city ?? null,
+      isp: info?.isp ?? info?.connection?.isp ?? orgParts.isp ?? trace?.organization ?? null,
+      asn: asn ? (String(asn).startsWith('AS') ? String(asn) : `AS${asn}`) : null,
+      org: info?.org ?? info?.connection?.org ?? trace?.organization ?? null,
+      country,
+      countryCode,
+      city: trace?.city ?? edgeMeta?.city ?? info?.city ?? null,
       region: info?.region ?? null,
-      latitude: info?.latitude ?? null,
-      longitude: info?.longitude ?? null,
-      timezone: ext?.timezone ?? info?.timezone ?? null,
-      source: ext ? `Cloudflare edge${info ? ' + IP intelligence provider' : ''}` : (info ? 'IP intelligence provider' : null),
+      latitude: info?.latitude ?? (Number.isFinite(locParts[0]) ? locParts[0] : null),
+      longitude: info?.longitude ?? (Number.isFinite(locParts[1]) ? locParts[1] : null),
+      timezone: info?.timezone ?? null,
+      source: providers.filter(p => p.data).map(p => p.name).join(' + ') || null,
     };
-    const ipv6Value = v6.status === 'fulfilled' ? v6.value : null;
     const snap: NetworkSnapshot = {
       ipv4,
-      ipv6: ipv6Value ? { ...emptyIp('IPv6'), ip: ipv6Value, source: 'api64.ipify.org' } : null,
+      ipv6: v6 ? { ...emptyIp('IPv6'), ip: v6, source: 'api64.ipify.org' } : null,
       browser: this.browserInfo(),
       preciseLocation: previous?.preciseLocation ?? null,
       preciseCity: previous?.preciseCity ?? null,
       locationDetail: previous?.locationDetail ?? null,
       collectedAt: new Date().toISOString(),
     };
-    if (!ip) this.error.set('Public IP could not be determined from the edge or fallback providers.');
+    if (!ip && !country) {
+      this.error.set(`Network information unavailable: ${providers.map(p => `${p.name} (${p.error ?? 'no data'})`).join(' · ')}`);
+    }
+    this.edge.set(trace ?? (edgeMeta as TraceInfo | null));
     this.snapshot.set(snap);
     this.loading.set(false);
     return snap;

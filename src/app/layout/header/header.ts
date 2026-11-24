@@ -33,7 +33,7 @@ interface MenuLink { label: string; path: string; hint: string; icon: string; }
               Platform <nv-icon name="chevron" [size]="13" class="nav-chevron"/>
             </button>
             <div class="mega" id="menu-platform" [class.open]="openMenu() === 'platform'">
-              <div class="mega__intro"><span class="eyebrow">Network intelligence</span><strong>See what is happening, not just a number.</strong><p class="tiny muted">Servers, tools, diagnostics and transparent analytics.</p></div>
+              <div class="mega__intro"><span class="eyebrow">Network intelligence</span><strong>See what is happening, not just a number.</strong><p class="tiny muted">Real edge details and browser-visible network checks.</p></div>
               <div class="mega__links">
                 @for (link of platformMenu; track link.path) {
                   <a [routerLink]="link.path" (click)="closeAll()"><nv-icon [name]="link.icon" [size]="16"/><span><strong>{{ link.label }}</strong><small>{{ link.hint }}</small></span></a>
@@ -98,15 +98,28 @@ interface MenuLink { label: string; path: string; hint: string; icon: string; }
     .mega__links span { display:grid; gap:.1rem; }
     .mega__links small { color:var(--nv-muted); font-size:.7rem; line-height:1.35; }
     @media (max-width: 1180px) {
-      .nv-header__inner { gap:.5rem; }
+      .nv-header__inner { gap:.5rem; padding-top:env(safe-area-inset-top); }
       .nav-toggle { display:inline-flex; }
-      .nv-nav { position:absolute; top:68px; left:0; right:0; flex-direction:column; align-items:stretch; gap:.15rem; padding:.75rem 1.25rem 1rem; background:var(--nv-bg); border-bottom:1px solid var(--nv-border); display:none; max-height:calc(100vh - 68px); overflow:auto; }
-      .nv-nav.open { display:flex; }
-      .nv-nav > a, .nav-trigger { width:100%; justify-content:flex-start; }
+      .nv-header .btn { min-height:44px; }
+      /* Off-canvas slide-in navigation. */
+      .nv-nav {
+        position:fixed; top:56px; right:0; z-index:70; display:flex;
+        flex-direction:column; align-items:stretch; gap:.15rem;
+        width:min(320px, 86vw); height:calc(100dvh - 56px);
+        padding:.75rem max(1rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) 1rem;
+        background:var(--nv-bg); border-left:1px solid var(--nv-border); box-shadow:var(--nv-shadow);
+        transform:translateX(103%); opacity:0; visibility:hidden;
+        transition:transform .22s ease, opacity .22s ease, visibility .22s;
+        max-height:none; overflow:auto;
+      }
+      .nv-nav.open { transform:none; opacity:1; visibility:visible; }
+      .nv-nav > a, .nav-trigger { width:100%; justify-content:flex-start; min-height:44px; }
+      .nv-nav > a { padding:.7rem .8rem; }
       .mega { position:static; width:auto; grid-template-columns:1fr; opacity:1; visibility:visible; transform:none; pointer-events:auto; display:none; box-shadow:none; border:0; padding:.4rem 0 .6rem; background:transparent; }
       .mega.open { display:grid; }
       .mega__intro { border-right:0; border-bottom:1px solid var(--nv-border); padding:0 0 .6rem; }
       .mega__links { grid-template-columns:1fr; }
+      .mega__links a { min-height:44px; }
     }
     @media (max-width: 640px) { .nav-cta { display:none; } }
   `,
@@ -119,27 +132,17 @@ export class HeaderComponent {
   private host = inject(ElementRef<HTMLElement>);
 
   readonly testMenu: MenuLink[] = [
-    { label: 'Internet speed test', path: '/', hint: 'Full download, upload and latency test', icon: 'gauge' },
-    { label: 'Wi-Fi speed test', path: '/wifi-speed-test', hint: 'Check your wireless connection', icon: 'wifi' },
-    { label: 'Download test', path: '/download-speed-test', hint: 'Measure sustained throughput', icon: 'download' },
-    { label: 'Upload test', path: '/upload-speed-test', hint: 'Measure upstream capacity', icon: 'upload' },
-    { label: 'Ping test', path: '/ping-test', hint: 'Idle round-trip latency', icon: 'activity' },
-    { label: 'Jitter test', path: '/jitter-test', hint: 'Consecutive latency variation', icon: 'bars' },
+    { label: 'Internet speed test', path: '/', hint: 'Download, upload, latency and loaded latency', icon: 'gauge' },
+    { label: 'Results & history', path: '/history', hint: 'Measurements saved in this browser', icon: 'chart' },
   ];
   readonly platformMenu: MenuLink[] = [
-    { label: 'Test servers', path: '/servers', hint: 'Latency-ranked regional nodes', icon: 'server' },
+    { label: 'Test servers', path: '/servers', hint: 'Cloudflare edge details', icon: 'server' },
     { label: 'Network tools', path: '/tools', hint: 'DNS, headers, TLS and IP checks', icon: 'terminal' },
-    { label: 'Diagnostics', path: '/diagnostics', hint: 'Browser-visible connection details', icon: 'router' },
-    { label: 'Global analytics', path: '/analytics', hint: 'Real aggregate measurements only', icon: 'chart' },
-    { label: 'Admin console', path: '/admin', hint: 'Operational controls for node owners', icon: 'settings' },
   ];
   readonly companyMenu: MenuLink[] = [
     { label: 'About Netvelox', path: '/about', hint: 'Why and how this platform is built', icon: 'info' },
     { label: 'Privacy policy', path: '/privacy', hint: 'What is collected and why', icon: 'lock' },
     { label: 'Terms of service', path: '/terms', hint: 'Rules for using the service', icon: 'list' },
-    { label: 'Cookie policy', path: '/cookies', hint: 'Local storage and consent choices', icon: 'settings' },
-    { label: 'Accessibility', path: '/accessibility', hint: 'Our accessibility commitment', icon: 'shield' },
-    { label: 'Status', path: '/status', hint: 'Current service and node health', icon: 'activity' },
   ];
 
   readonly headerOffset = signal(0);

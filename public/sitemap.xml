@@ -2,24 +2,11 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://netvelox.com/</loc><priority>1.0</priority><changefreq>weekly</changefreq></url>
   <url><loc>https://netvelox.com/speed-test</loc><priority>0.9</priority></url>
-  <url><loc>https://netvelox.com/wifi-speed-test</loc><priority>0.8</priority></url>
-  <url><loc>https://netvelox.com/download-speed-test</loc><priority>0.8</priority></url>
-  <url><loc>https://netvelox.com/upload-speed-test</loc><priority>0.8</priority></url>
-  <url><loc>https://netvelox.com/ping-test</loc><priority>0.8</priority></url>
-  <url><loc>https://netvelox.com/jitter-test</loc><priority>0.7</priority></url>
   <url><loc>https://netvelox.com/servers</loc><priority>0.7</priority></url>
   <url><loc>https://netvelox.com/tools</loc><priority>0.8</priority></url>
-  <url><loc>https://netvelox.com/diagnostics</loc><priority>0.7</priority></url>
   <url><loc>https://netvelox.com/history</loc><priority>0.5</priority></url>
-  <url><loc>https://netvelox.com/analytics</loc><priority>0.6</priority></url>
   <url><loc>https://netvelox.com/guides</loc><priority>0.7</priority></url>
-  <url><loc>https://netvelox.com/guides/internet-speed-guide</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/understanding-jitter</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/understanding-ping</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/internet-troubleshooting</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/isp-information</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/global-speed-statistics</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/download-vs-upload</loc><priority>0.6</priority></url>
-  <url><loc>https://netvelox.com/guides/wifi-optimization</loc><priority>0.6</priority></url>
+  <url><loc>https://netvelox.com/about</loc><priority>0.5</priority></url>
   <url><loc>https://netvelox.com/privacy</loc><priority>0.4</priority></url>
+  <url><loc>https://netvelox.com/terms</loc><priority>0.4</priority></url>
 </urlset>
